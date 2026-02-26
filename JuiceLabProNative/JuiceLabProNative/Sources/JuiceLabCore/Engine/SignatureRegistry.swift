@@ -17,7 +17,10 @@ public enum SignatureRegistry {
         zipSignature,
         mp3Signature,
         mp4Signature,
-        movSignature
+        movSignature,
+        tgzSignature,
+        tbz2Signature,
+        txzSignature
     ]
 
     public static let signatureMap: [String: FileSignature] = Dictionary(uniqueKeysWithValues: signatures.map { ($0.type, $0) })
@@ -94,5 +97,20 @@ public enum SignatureRegistry {
         let profile = String(data: data[(offset + 8)...(offset + 11)], encoding: .ascii) ?? ""
         guard brand == "ftyp", profile.lowercased().contains("qt") else { return nil }
         return (min(24_000_000, data.count - offset), .partial, 0.7)
+    }
+
+    static let tgzSignature = FileSignature(type: "tgz", category: .archives, fileExtension: "tgz", magic: [0x1F, 0x8B]) { data, offset in
+        // Alias for .tar.gz
+        return (min(32_000_000, data.count - offset), .partial, 0.8)
+    }
+
+    static let tbz2Signature = FileSignature(type: "tbz2", category: .archives, fileExtension: "tbz2", magic: [0x42, 0x5A, 0x68]) { data, offset in
+        // Alias for .tar.bz2
+        return (min(32_000_000, data.count - offset), .partial, 0.78)
+    }
+
+    static let txzSignature = FileSignature(type: "txz", category: .archives, fileExtension: "txz", magic: [0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]) { data, offset in
+        // Alias for .tar.xz
+        return (min(32_000_000, data.count - offset), .partial, 0.82)
     }
 }

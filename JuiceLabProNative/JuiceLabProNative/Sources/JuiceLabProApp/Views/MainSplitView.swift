@@ -3,6 +3,8 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import JuiceLabCore
+import AVKit
+import PDFKit
 
 struct MainSplitView: View {
     @EnvironmentObject private var vm: AppViewModel
@@ -14,6 +16,8 @@ struct MainSplitView: View {
             Group {
                 if vm.route == .settings {
                     SettingsPanelView()
+                } else if vm.route == .forensic {
+                    ForensicDashboardView()
                 } else {
                     VStack(spacing: 12) {
                         ToolbarView()
@@ -58,6 +62,7 @@ private struct SidebarView: View {
         switch route {
         case .runs: return "clock.arrow.circlepath"
         case .results: return "tray.full"
+        case .forensic: return "shield.lefthalf.filled"
         case .settings: return "gearshape"
         }
     }
@@ -202,6 +207,12 @@ private struct InspectorView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                GroupBox("Preview") {
+                    PreviewView(item: item)
+                        .frame(maxWidth: .infinity, minHeight: 180, maxHeight: 320)
+                        .background(Color.gray.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
                 GroupBox("Actions") {
                     HStack {
                         Button("Reveal in Finder") {
@@ -223,6 +234,126 @@ private struct InspectorView: View {
     }
 }
 
+private struct PreviewView: View {
+    let item: FoundItem
+
+    @State private var nsImage: NSImage?
+    @State private var previewText: String = ""
+    @State private var pdfDocument: PDFDocument?
+    @State private var avPlayer: AVPlayer?
+
+    var body: some View {
+        ZStack {
+            if let doc = pdfDocument {
+                PDFKitView(document: doc)
+            } else if let player = avPlayer {
+                AVPlayerViewWrapper(player: player)
+            } else if let img = nsImage {
+                GeometryReader { geo in
+                    Image(nsImage: img)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                }
+            } else if !previewText.isEmpty {
+                ScrollView { Text(previewText).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(6) }
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .task { await loadPreview() }
+    }
+
+    private func loadPreview() async {
+        let path = item.outputPath ?? item.sourcePath
+        let url = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: path) else {
+            await MainActor.run { self.previewText = "File not found" }
+            return
+        }
+        #if canImport(AppKit)
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer {
+            if scoped { url.stopAccessingSecurityScopedResource() }
+        }
+        #endif
+        do {
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+
+            // Priority: PDF, AV (video/audio), Image, Text, Hex
+            let ext = url.pathExtension.lowercased()
+            if ext == "pdf", let doc = PDFDocument(data: data) {
+                await MainActor.run { self.pdfDocument = doc }
+                return
+            }
+
+            let videoExts: Set<String> = ["mp4", "mov", "mkv", "avi", "webm", "mpeg", "m2ts"]
+            let audioExts: Set<String> = ["mp3", "wav", "flac", "ogg", "m4a", "aac", "alac"]
+            if videoExts.contains(ext) || audioExts.contains(ext) {
+                let player = AVPlayer(url: url)
+                await MainActor.run { self.avPlayer = player }
+                return
+            }
+
+            if item.category == .images, let img = NSImage(data: data) {
+                await MainActor.run { self.nsImage = img }
+                return
+            }
+
+            let textExts: Set<String> = ["txt", "csv", "json", "xml", "html", "md"]
+            if textExts.contains(ext) {
+                if let s = String(data: data.prefix(32_768), encoding: .utf8) ?? String(data: data.prefix(32_768), encoding: .ascii) {
+                    await MainActor.run { self.previewText = s }
+                    return
+                }
+            }
+
+            // Fallback: hex dump of the first up to 4KB
+            let sample = data.prefix(4096)
+            var lines: [String] = []
+            var offset = 0
+            let bytes = Array(sample)
+            while offset < bytes.count {
+                let chunk = bytes[offset..<min(offset+16, bytes.count)]
+                let hex = chunk.map { String(format: "%02X", $0) }.joined(separator: " ")
+                lines.append(String(format: "%08X  %@", offset, hex))
+                offset += 16
+            }
+            await MainActor.run { self.previewText = lines.joined(separator: "\n") }
+        } catch {
+            let message = "Preview failed: \(error.localizedDescription). If this is a source file, try exporting the item first and previewing the exported file."
+            await MainActor.run { self.previewText = message }
+        }
+    }
+}
+
+private struct PDFKitView: NSViewRepresentable {
+    let document: PDFDocument
+    func makeNSView(context: Context) -> PDFView {
+        let v = PDFView()
+        v.autoScales = true
+        v.displayMode = .singlePageContinuous
+        v.document = document
+        return v
+    }
+    func updateNSView(_ nsView: PDFView, context: Context) {
+        nsView.document = document
+    }
+}
+
+private struct AVPlayerViewWrapper: NSViewRepresentable {
+    let player: AVPlayer
+    func makeNSView(context: Context) -> AVPlayerView {
+        let v = AVPlayerView()
+        v.controlsStyle = .minimal
+        v.player = player
+        return v
+    }
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        nsView.player = player
+    }
+}
+
 private struct SettingsPanelView: View {
     @EnvironmentObject private var vm: AppViewModel
 
@@ -233,6 +364,30 @@ private struct SettingsPanelView: View {
                 Button("Choose…") {
                     chooseOutputFolder()
                 }
+            }
+            Section("Quick Categories") {
+                let all = Set(SignatureRegistry.signatures.map { $0.type })
+                let images = Set(SignatureRegistry.signatures.filter { $0.category == .images }.map { $0.type })
+                let audio = Set(SignatureRegistry.signatures.filter { $0.category == .audio }.map { $0.type })
+                let video = Set(SignatureRegistry.signatures.filter { $0.category == .video }.map { $0.type })
+                let archives = Set(SignatureRegistry.signatures.filter { $0.category == .archives }.map { $0.type })
+
+                HStack {
+                    Button("Images") { vm.settings.enabledTypes.formUnion(images) }
+                    Button("Audio") { vm.settings.enabledTypes.formUnion(audio) }
+                    Button("Video") { vm.settings.enabledTypes.formUnion(video) }
+                    Button("Archives") { vm.settings.enabledTypes.formUnion(archives) }
+                    Button("All") { vm.settings.enabledTypes = all }
+                }
+                .buttonStyle(.bordered)
+
+                HStack {
+                    Button("Only Images") { vm.settings.enabledTypes = images }
+                    Button("Only Audio") { vm.settings.enabledTypes = audio }
+                    Button("Only Video") { vm.settings.enabledTypes = video }
+                    Button("Only Archives") { vm.settings.enabledTypes = archives }
+                }
+                .buttonStyle(.bordered)
             }
             Picker("Organization", selection: $vm.settings.organizationScheme) {
                 Text("By source").tag(OrganizationScheme.bySource)
@@ -277,4 +432,61 @@ private func revealInFinder(path: String) {
     }
 }
 
+private struct ForensicDashboardView: View {
+    @EnvironmentObject private var vm: AppViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Forensic Summary").font(.title3.bold())
+            if let run = vm.activeRun {
+                let f = run.forensic
+                HStack {
+                    SummaryCard(title: ".REM Files", value: "\(f.remCount)")
+                    SummaryCard(title: "Media Recovered", value: "\(f.mediaCount)")
+                    SummaryCard(title: "Possible Decryptable DBs", value: "\(f.possibleDecryptableDBs)")
+                    SummaryCard(title: "Nested Archives", value: "\(f.nestedArchives)")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                GroupBox("Keys Found") {
+                    if f.keyFiles.isEmpty { Text("None").foregroundStyle(.secondary) }
+                    else { ForEach(f.keyFiles, id: \.self) { Text($0).lineLimit(1) } }
+                }
+
+                GroupBox("Analyzer Outputs") {
+                    if f.analyzerResults.isEmpty {
+                        Text("No analyzer results yet.").foregroundStyle(.secondary)
+                    } else {
+                        ForEach(f.analyzerResults, id: \.sourcePath) { r in
+                            HStack {
+                                Text(URL(fileURLWithPath: r.sourcePath).lastPathComponent).bold()
+                                Spacer()
+                                if let p = r.stringsPath { Button("Strings") { NSWorkspace.shared.open(URL(fileURLWithPath: p)) } }
+                                Text("Media: \(r.carvedMediaCount)")
+                                if r.sqliteHeaderDetected { Text("SQLite").foregroundStyle(.green) }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Text("Run a scan to see forensic summaries.").foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .cardSurface()
+        .padding(.vertical)
+    }
+}
+
+private struct SummaryCard: View {
+    let title: String
+    let value: String
+    var body: some View {
+        VStack { Text(title).font(.caption).foregroundStyle(.secondary); Text(value).font(.title2.bold()) }
+            .frame(width: 180, height: 80)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color.gray.opacity(0.12)))
+    }
+}
+
 #endif
+

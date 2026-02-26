@@ -87,6 +87,31 @@ public struct ScanProgress: Codable, Sendable {
     }
 }
 
+public struct AnalyzerResult: Codable, Sendable {
+    public var sourcePath: String
+    public var stringsPath: String?
+    public var carvedMediaCount: Int
+    public var sqliteHeaderDetected: Bool
+
+    public init(sourcePath: String, stringsPath: String? = nil, carvedMediaCount: Int = 0, sqliteHeaderDetected: Bool = false) {
+        self.sourcePath = sourcePath
+        self.stringsPath = stringsPath
+        self.carvedMediaCount = carvedMediaCount
+        self.sqliteHeaderDetected = sqliteHeaderDetected
+    }
+}
+
+public struct ForensicSummary: Codable, Sendable {
+    public var remCount: Int = 0
+    public var mediaCount: Int = 0
+    public var possibleDecryptableDBs: Int = 0
+    public var keyFiles: [String] = []
+    public var nestedArchives: Int = 0
+    public var analyzerResults: [AnalyzerResult] = []
+
+    public init() {}
+}
+
 public struct ScanRun: Identifiable, Codable, Sendable {
     public let id: UUID
     public let startedAt: Date
@@ -97,6 +122,7 @@ public struct ScanRun: Identifiable, Codable, Sendable {
     public var items: [FoundItem]
     public var warnings: [String]
     public var mode: PerformanceMode
+    public var forensic: ForensicSummary
 
     public init(
         id: UUID = UUID(),
@@ -107,7 +133,8 @@ public struct ScanRun: Identifiable, Codable, Sendable {
         outputRoot: String,
         items: [FoundItem] = [],
         warnings: [String] = [],
-        mode: PerformanceMode = .balanced
+        mode: PerformanceMode = .balanced,
+        forensic: ForensicSummary = ForensicSummary()
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -118,6 +145,7 @@ public struct ScanRun: Identifiable, Codable, Sendable {
         self.items = items
         self.warnings = warnings
         self.mode = mode
+        self.forensic = forensic
     }
 }
 
@@ -129,6 +157,9 @@ public struct ScanSettings: Codable, Sendable {
     public var maxFileSizeMB: Int?
     public var performanceMode: PerformanceMode
     public var enabledTypes: Set<String>
+    public var enablePythonAnalyzers: Bool
+    public var pythonPath: String
+    public var scriptsFolder: String
 
     public init(
         outputFolder: String = {
@@ -141,7 +172,17 @@ public struct ScanSettings: Codable, Sendable {
         keepHighestQualityImage: Bool = true,
         maxFileSizeMB: Int? = nil,
         performanceMode: PerformanceMode = .balanced,
-        enabledTypes: Set<String> = ["jpeg", "png", "gif", "pdf", "zip", "mp3", "mp4", "mov"]
+        enabledTypes: Set<String> = [
+            "jpeg", "png", "gif", "webp",
+            "pdf",
+            "zip", "rar", "7z", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz", "lz4", "zst", "ar", "deb", "rpm",
+            "mp3", "wav", "flac", "ogg", "m4a", "aac", "alac",
+            "mp4", "mov", "avi", "mkv", "mpeg", "m2ts", "webm",
+            "tiff", "tif", "bmp", "ico", "psd", "dds", "heic", "heif", "heifs", "heics"
+        ],
+        enablePythonAnalyzers: Bool = false,
+        pythonPath: String = "/usr/bin/python3",
+        scriptsFolder: String = NSHomeDirectory() + "/BlackBerryTools"
     ) {
         self.outputFolder = outputFolder
         self.organizationScheme = organizationScheme
@@ -150,5 +191,9 @@ public struct ScanSettings: Codable, Sendable {
         self.maxFileSizeMB = maxFileSizeMB
         self.performanceMode = performanceMode
         self.enabledTypes = enabledTypes
+        self.enablePythonAnalyzers = enablePythonAnalyzers
+        self.pythonPath = pythonPath
+        self.scriptsFolder = scriptsFolder
     }
 }
+

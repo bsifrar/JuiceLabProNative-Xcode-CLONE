@@ -9,6 +9,7 @@ final class AppViewModel: ObservableObject {
     enum Route: String, CaseIterable {
         case runs = "Runs"
         case results = "Results"
+        case forensic = "Forensic"
         case settings = "Settings"
     }
 
@@ -102,3 +103,4 @@ final class AppViewModel: ObservableObject {
     }
 }
 #endif
+
