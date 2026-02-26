@@ -4,3 +4,8 @@
 *.xcscmblueprint
 **/xcuserdata/
 .DS_Store
+.DS_Store
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+**/xcuserdata/
