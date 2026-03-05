@@ -285,6 +285,7 @@ public actor ScannerEngine {
         // 1) Copy files
         let exportedItems = exportItems(run: run, to: runRoot)
         updated.items = exportedItems
+        _ = generateBinaryStringArtifacts(for: &updated, at: runRoot)
         _ = generatePDFTextArtifacts(for: &updated, at: runRoot)
         _ = try generateHeatmaps(for: &updated, at: runRoot)
 
@@ -1041,6 +1042,140 @@ public actor ScannerEngine {
             }
         }
         return created
+    }
+
+    private func generateBinaryStringArtifacts(for run: inout ScanRun, at runRoot: URL) -> Int {
+        let stringsDir = runRoot.appendingPathComponent("strings", isDirectory: true)
+        try? FileManager.default.createDirectory(at: stringsDir, withIntermediateDirectories: true)
+
+        let binaryExts: Set<String> = [
+            "dat", "bin", "db", "sqlite", "cache", "tmp", "blob", "raw", "log"
+        ]
+
+        var sourceToAnalyzerIndex: [String: Int] = [:]
+        for (idx, ar) in run.forensic.analyzerResults.enumerated() {
+            sourceToAnalyzerIndex[ar.sourcePath] = idx
+        }
+
+        var processedSources = Set<String>()
+        var created = 0
+
+        for item in run.items {
+            if processedSources.contains(item.sourcePath) { continue }
+            processedSources.insert(item.sourcePath)
+
+            let sourceURL = URL(fileURLWithPath: item.sourcePath)
+            let ext = sourceURL.pathExtension.lowercased()
+            let isCandidate = binaryExts.contains(ext) || item.category == .uncertain
+            if !isCandidate { continue }
+
+            let ioPath = item.outputPath ?? item.sourcePath
+            guard let stringsText = extractMeaningfulStrings(from: ioPath) else { continue }
+
+            let stem = sanitizedFileStem(ioPath)
+            var dst = stringsDir.appendingPathComponent("\(stem).strings.txt")
+            if FileManager.default.fileExists(atPath: dst.path) {
+                dst = stringsDir.appendingPathComponent("\(stem)-\(item.id.uuidString.prefix(8)).strings.txt")
+            }
+
+            do {
+                try stringsText.write(to: dst, atomically: true, encoding: .utf8)
+                if let idx = sourceToAnalyzerIndex[item.sourcePath] {
+                    if run.forensic.analyzerResults[idx].stringsPath == nil {
+                        run.forensic.analyzerResults[idx].stringsPath = dst.path
+                    }
+                } else {
+                    var ar = AnalyzerResult(sourcePath: item.sourcePath)
+                    ar.stringsPath = dst.path
+                    if ext == "sqlite" || ext == "db" {
+                        ar.sqliteHeaderDetected = true
+                    }
+                    run.forensic.analyzerResults.append(ar)
+                    sourceToAnalyzerIndex[item.sourcePath] = run.forensic.analyzerResults.count - 1
+                }
+                created += 1
+            } catch {
+                continue
+            }
+        }
+
+        return created
+    }
+
+    private func extractMeaningfulStrings(from path: String) -> String? {
+        let url = URL(fileURLWithPath: path)
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let sizeNumber = attrs[.size] as? NSNumber else { return nil }
+
+        let fileSize = sizeNumber.intValue
+        if fileSize <= 0 { return nil }
+
+        // Keep extraction bounded for stability on huge binaries.
+        let maxBytes = 24 * 1_048_576
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe).prefix(maxBytes) else { return nil }
+        if data.isEmpty { return nil }
+
+        let minLen = 6
+        let maxOutLines = 5000
+        let printable = CharacterSet(charactersIn: " -~\t")
+        let bytes = Array(data)
+
+        var lines: [String] = []
+        lines.reserveCapacity(1024)
+
+        // ASCII strings
+        var ascii: [UInt8] = []
+        ascii.reserveCapacity(128)
+        for b in bytes {
+            let scalar = UnicodeScalar(Int(b))!
+            if printable.contains(scalar) {
+                ascii.append(b)
+            } else {
+                if ascii.count >= minLen, let s = String(bytes: ascii, encoding: .ascii) {
+                    lines.append("[ASCII] \(s)")
+                    if lines.count >= maxOutLines { break }
+                }
+                ascii.removeAll(keepingCapacity: true)
+            }
+        }
+        if lines.count < maxOutLines, ascii.count >= minLen, let s = String(bytes: ascii, encoding: .ascii) {
+            lines.append("[ASCII] \(s)")
+        }
+
+        // UTF-16LE-like strings (printable byte + 0x00 pattern)
+        if lines.count < maxOutLines {
+            var chars: [UInt16] = []
+            chars.reserveCapacity(128)
+            var i = 0
+            while i + 1 < bytes.count, lines.count < maxOutLines {
+                let lo = bytes[i]
+                let hi = bytes[i + 1]
+                if hi == 0x00, lo >= 0x20, lo <= 0x7E {
+                    chars.append(UInt16(lo))
+                } else {
+                    if chars.count >= minLen {
+                        let scalars = chars.compactMap(UnicodeScalar.init).map(Character.init)
+                        lines.append("[UTF16] " + String(scalars))
+                    }
+                    chars.removeAll(keepingCapacity: true)
+                }
+                i += 2
+            }
+            if lines.count < maxOutLines, chars.count >= minLen {
+                let scalars = chars.compactMap(UnicodeScalar.init).map(Character.init)
+                lines.append("[UTF16] " + String(scalars))
+            }
+        }
+
+        if lines.isEmpty { return nil }
+
+        let header = [
+            "# File: \(path)",
+            "# Bytes scanned: \(bytes.count)",
+            "# Strings found: \(lines.count)",
+            ""
+        ].joined(separator: "\n")
+        return header + lines.joined(separator: "\n")
     }
 
     private func extractPDFText(from path: String) -> String? {
