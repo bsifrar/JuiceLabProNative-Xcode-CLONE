@@ -341,6 +341,7 @@ public actor ScannerEngine {
     private func buildStages(tempRoot: URL) -> [ScanStage] {
         [
             ForensicSniffStage(),
+            FileCarveStage(),
             MediaTypeStage(),
             AIClassificationStage(),
             EmbeddingStage(),
@@ -410,6 +411,72 @@ public actor ScannerEngine {
 
             out.items = [item]
             if category == .images || category == .video { out.forensicDelta.mediaCount += 1 }
+            return out
+        }
+    }
+
+    /// Byte-level signature carving for container/binary files (.dat, .bin, etc).
+    struct FileCarveStage: ScanStage {
+        let name: String = "file_carve"
+        let maxItemsPerFile = 1500
+
+        func process(file: URL, data: Data, context: ScanContext) async -> StageOutput {
+            guard data.count >= 64 else { return StageOutput() }
+
+            let stride: Int
+            switch context.settings.performanceMode {
+            case .fast: stride = 16
+            case .balanced: stride = 4
+            case .thorough: stride = 1
+            }
+
+            var out = StageOutput()
+            var seen = Set<String>()
+            var foundCount = 0
+            var offset = 0
+
+            while offset < data.count {
+                if Task.isCancelled { break }
+
+                let hits = SignatureRegistry.detect(in: data, offset: offset)
+                for hit in hits {
+                    // Skip top-level signature at offset 0 to avoid duplicate "whole-file" rows.
+                    if hit.offset == 0 { continue }
+                    if !context.settings.enabledTypes.contains(hit.detectedType) { continue }
+                    if hit.length <= 0 || hit.offset + hit.length > data.count { continue }
+
+                    let key = "\(hit.detectedType)|\(hit.offset)|\(hit.length)"
+                    if seen.contains(key) { continue }
+                    seen.insert(key)
+
+                    let carved = FoundItem(
+                        sourcePath: file.path,
+                        offset: hit.offset,
+                        length: hit.length,
+                        detectedType: hit.detectedType,
+                        category: hit.category,
+                        fileExtension: hit.fileExtension,
+                        confidence: hit.confidence,
+                        validationStatus: hit.validationStatus,
+                        contentHash: nil,
+                        outputPath: nil
+                    )
+                    out.items.append(carved)
+
+                    if carved.category == .images || carved.category == .video {
+                        out.forensicDelta.mediaCount += 1
+                    }
+
+                    foundCount += 1
+                    if foundCount >= maxItemsPerFile {
+                        out.warnings.append("Carve limit reached (\(maxItemsPerFile)) for \(file.lastPathComponent)")
+                        return out
+                    }
+                }
+
+                offset += stride
+            }
+
             return out
         }
     }
@@ -698,7 +765,7 @@ public actor ScannerEngine {
         for root in roots {
             if (try? root.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
                 let ext = root.pathExtension.lowercased()
-                if ext.isEmpty || enabledTypes.contains(ext) {
+                if shouldIncludeFile(withExtension: ext, enabledTypes: enabledTypes) {
                     results.append(root)
                 }
                 continue
@@ -713,11 +780,21 @@ public actor ScannerEngine {
             while let next = enumerator.nextObject() as? URL {
                 guard (try? next.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
                 let ext = next.pathExtension.lowercased()
-                if !ext.isEmpty, !enabledTypes.contains(ext) { continue }
+                if !shouldIncludeFile(withExtension: ext, enabledTypes: enabledTypes) { continue }
                 results.append(next)
             }
         }
         return results
+    }
+
+    private func shouldIncludeFile(withExtension ext: String, enabledTypes: Set<String>) -> Bool {
+        if ext.isEmpty || enabledTypes.contains(ext) { return true }
+
+        // Always include common container/binary artifacts so carving can discover embedded media.
+        let carveCandidates: Set<String> = [
+            "dat", "bin", "db", "sqlite", "cache", "thumb", "thumbs", "blob", "tmp", "raw"
+        ]
+        return carveCandidates.contains(ext)
     }
 
     // MARK: - Dedupe
@@ -814,15 +891,39 @@ public actor ScannerEngine {
 
     private func exportOne(item: FoundItem, to dir: URL) throws -> FoundItem {
         let src = URL(fileURLWithPath: item.sourcePath)
-        let dst = dir.appendingPathComponent(src.lastPathComponent)
+        let srcSize = (try? src.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? item.length
+        let looksCarved = item.offset > 0 || (item.length > 0 && item.length < srcSize)
 
+        if looksCarved {
+            let data = try Data(contentsOf: src, options: .mappedIfSafe)
+            let end = item.offset + item.length
+
+            if item.offset >= 0, item.length > 0, end <= data.count {
+                let carvedBytes = data.subdata(in: item.offset..<end)
+                let ext = item.fileExtension.isEmpty ? (src.pathExtension.isEmpty ? "bin" : src.pathExtension) : item.fileExtension
+                let base = src.deletingPathExtension().lastPathComponent
+                let carvedName = "\(base)_0x\(String(item.offset, radix: 16)).\(ext)"
+                var carvedDst = dir.appendingPathComponent(carvedName)
+
+                if FileManager.default.fileExists(atPath: carvedDst.path) {
+                    carvedDst = dir.appendingPathComponent("\(UUID().uuidString)-\(carvedName)")
+                }
+
+                try carvedBytes.write(to: carvedDst, options: .atomic)
+
+                var updated = item
+                updated.outputPath = carvedDst.path
+                return updated
+            }
+        }
+
+        let dst = dir.appendingPathComponent(src.lastPathComponent)
         let finalDst: URL
         if FileManager.default.fileExists(atPath: dst.path) {
             finalDst = dir.appendingPathComponent("\(UUID().uuidString)-\(src.lastPathComponent)")
         } else {
             finalDst = dst
         }
-
         do { try FileManager.default.copyItem(at: src, to: finalDst) } catch { }
 
         var updated = item
