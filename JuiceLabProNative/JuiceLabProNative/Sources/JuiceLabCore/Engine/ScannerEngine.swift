@@ -696,6 +696,14 @@ public actor ScannerEngine {
         let fm = FileManager.default
 
         for root in roots {
+            if (try? root.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                let ext = root.pathExtension.lowercased()
+                if ext.isEmpty || enabledTypes.contains(ext) {
+                    results.append(root)
+                }
+                continue
+            }
+
             guard let enumerator = fm.enumerator(
                 at: root,
                 includingPropertiesForKeys: [.isRegularFileKey],
