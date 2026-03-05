@@ -70,6 +70,7 @@ private struct SidebarView: View {
 
 private struct ToolbarView: View {
     @EnvironmentObject private var vm: AppViewModel
+    @State private var showClearResultsDialog = false
 
     var body: some View {
         HStack {
@@ -103,6 +104,20 @@ private struct ToolbarView: View {
                     NSWorkspace.shared.open(url)
                 }
             }
+
+            Button("Clear Results") {
+                showClearResultsDialog = true
+            }
+            .disabled(vm.isScanning || vm.runs.isEmpty)
+            .foregroundStyle(.red)
+        }
+        .confirmationDialog("Clear all results and run history?", isPresented: $showClearResultsDialog, titleVisibility: .visible) {
+            Button("Clear Results", role: .destructive) {
+                vm.clearResults(removeFiles: true)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes results from the app and deletes exported run folders.")
         }
         .cardSurface()
     }

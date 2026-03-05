@@ -444,12 +444,20 @@ public actor ScannerEngine {
             case .thorough: stride = 1
             }
 
+            let maxBytesToInspect: Int
+            switch context.settings.performanceMode {
+            case .fast: maxBytesToInspect = 32 * 1_048_576
+            case .balanced: maxBytesToInspect = 96 * 1_048_576
+            case .thorough: maxBytesToInspect = 256 * 1_048_576
+            }
+            let scanEnd = min(data.count, maxBytesToInspect)
+
             var out = StageOutput()
             var seen = Set<String>()
             var foundCount = 0
             var offset = 0
 
-            while offset < data.count {
+            while offset < scanEnd {
                 if Task.isCancelled { break }
 
                 let hits = SignatureRegistry.detect(in: data, offset: offset)
@@ -489,6 +497,12 @@ public actor ScannerEngine {
                 }
 
                 offset += stride
+            }
+
+            if scanEnd < data.count {
+                out.warnings.append(
+                    "Carving truncated at \(ByteCountFormatter.string(fromByteCount: Int64(scanEnd), countStyle: .file)) for \(file.lastPathComponent) (mode \(context.settings.performanceMode.rawValue))."
+                )
             }
 
             return out

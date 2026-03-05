@@ -159,6 +159,30 @@ final class AppViewModel: ObservableObject {
         isScanning = false
     }
 
+    func clearResults(removeFiles: Bool = true) {
+        if removeFiles {
+            let fm = FileManager.default
+            for run in runs {
+                let path = run.outputRoot
+                if path.isEmpty || path == "/" { continue }
+                let url = URL(fileURLWithPath: path)
+                if fm.fileExists(atPath: url.path) {
+                    try? fm.removeItem(at: url)
+                }
+            }
+        }
+
+        runs.removeAll()
+        selectedRunID = nil
+        selectedItem = nil
+        progress = ScanProgress()
+        statusMessage = "Results cleared."
+
+        Task {
+            try? await history.clear()
+        }
+    }
+
     /// ✅ throttles UI refresh to ~10Hz to prevent churn on huge scans
     private func throttledTick() {
         let now = CFAbsoluteTimeGetCurrent()

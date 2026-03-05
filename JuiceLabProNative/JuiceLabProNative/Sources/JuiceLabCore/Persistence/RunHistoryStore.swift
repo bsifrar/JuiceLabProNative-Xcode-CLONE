@@ -25,4 +25,9 @@ public actor RunHistoryStore {
         let encoded = try JSONEncoder().encode(runs)
         try encoded.write(to: fileURL)
     }
+
+    public func clear() throws {
+        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("[]".utf8).write(to: fileURL)
+    }
 }
