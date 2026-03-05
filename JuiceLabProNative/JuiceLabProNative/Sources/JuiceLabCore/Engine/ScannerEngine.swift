@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(AVFoundation)
+import AVFoundation
+#endif
+
 #if canImport(CryptoKit)
 import CryptoKit
 #endif
@@ -279,6 +283,11 @@ public actor ScannerEngine {
             compute: updated.settings.aiComputePreference
         )
         let embeddingModelIdentifier = EmbeddingEngine.shared.modelIdentifier(modelID: updated.settings.embeddingModelID)
+        let reportIntegrityHash = try hashJSON(IntegrityPayload(
+            settings: updated.settings,
+            forensic: updated.forensic,
+            items: exportedItems
+        ))
 
         let manifest = RunManifest(
             runID: updated.id.uuidString,
@@ -298,7 +307,9 @@ public actor ScannerEngine {
             aiModelHash: aiModelHash,
             embeddingEnabled: updated.settings.enableEmbeddings,
             embeddingModelID: updated.settings.embeddingModelID,
-            embeddingModelIdentifier: embeddingModelIdentifier
+            embeddingModelIdentifier: embeddingModelIdentifier,
+            caseMetadata: updated.settings.caseMetadata,
+            reportIntegrityHash: reportIntegrityHash
         )
         try writeJSON(manifest, to: runRoot.appendingPathComponent("run_manifest.json"))
 
@@ -355,6 +366,7 @@ public actor ScannerEngine {
         func process(file: URL, data: Data, context: ScanContext) async -> StageOutput {
             var out = StageOutput()
             let ext = file.pathExtension.lowercased()
+            let contentHash = Hashing.hexSHA256(data)
 
             let imageExts: Set<String> = ["jpg","jpeg","png","gif","webp","tif","tiff","bmp","heic","heif","ico"]
             let videoExts: Set<String> = ["mp4","mov","mkv","avi","mpeg","m2ts","webm"]
@@ -379,6 +391,7 @@ public actor ScannerEngine {
                 fileExtension: ext,
                 confidence: 0.5,
                 validationStatus: .uncertain,
+                contentHash: contentHash,
                 outputPath: nil
             )
 
@@ -394,11 +407,20 @@ public actor ScannerEngine {
         func process(file: URL, data: Data, context: ScanContext) async -> StageOutput {
             guard context.enableAIClassification else { return StageOutput() }
 
-            // Only attempt for images (and optionally videos later)
             let ext = file.pathExtension.lowercased()
             let imageExts: Set<String> = ["jpg","jpeg","png","gif","webp","tif","tiff","bmp","heic","heif","ico"]
-            guard imageExts.contains(ext) else { return StageOutput() }
+            let videoExts: Set<String> = ["mp4","mov","mkv","avi","mpeg","m2ts","webm"]
 
+            if imageExts.contains(ext) {
+                return await analyzeImage(file: file, context: context)
+            }
+            if videoExts.contains(ext) {
+                return await analyzeVideo(file: file, context: context)
+            }
+            return StageOutput()
+        }
+
+        private func analyzeImage(file: URL, context: ScanContext) async -> StageOutput {
             guard let cg = AIEngine.shared.loadCGImage(from: file) else { return StageOutput() }
 
             var out = StageOutput()
@@ -421,6 +443,90 @@ public actor ScannerEngine {
             )
             ar.nsfwScore = score
             ar.nsfwSeverity = severity
+            applyModelStamps(to: &ar, context: context)
+
+            out.analyzerResults = [ar]
+            return out
+        }
+
+        private func analyzeVideo(file: URL, context: ScanContext) async -> StageOutput {
+            #if canImport(AVFoundation)
+            let asset = AVURLAsset(url: file)
+            let durationSeconds = CMTimeGetSeconds(asset.duration)
+            let cappedDuration = min(max(durationSeconds, 1), 30)
+            let frameCount = max(1, min(Int(cappedDuration), 30))
+
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.requestedTimeToleranceBefore = .zero
+            generator.requestedTimeToleranceAfter = .zero
+
+            var sampledFrames = 0
+            var sensitiveFrames = 0
+            var explicitFrames = 0
+            var bestScore = 0.0
+            var bestSeverity: NSFWSeverity = .unknown
+            var allDetections: [ReasonDetection] = []
+
+            for i in 0..<frameCount {
+                let t = CMTime(seconds: Double(i), preferredTimescale: 600)
+                var actual = CMTime.zero
+                guard let cg = try? generator.copyCGImage(at: t, actualTime: &actual) else { continue }
+                sampledFrames += 1
+
+                let sensitive = await AIEngine.shared.scaIsSensitive(cgImage: cg)
+                if sensitive == true { sensitiveFrames += 1 }
+
+                let detections = await AIEngine.shared.detectReasons(
+                    cgImage: cg,
+                    modelName: context.settings.aiModelName,
+                    compute: context.settings.aiComputePreference
+                ) ?? []
+
+                let (score, severity) = Self.scoreDetections(detections: detections, scaSensitive: sensitive)
+                bestScore = max(bestScore, score)
+                if severity == .explicit { explicitFrames += 1 }
+                if severityPriority(severity) > severityPriority(bestSeverity) { bestSeverity = severity }
+
+                if !detections.isEmpty {
+                    let ts = String(format: "%.2fs", CMTimeGetSeconds(actual))
+                    allDetections.append(contentsOf: detections.map {
+                        ReasonDetection(
+                            reason: $0.reason,
+                            confidence: $0.confidence,
+                            bbox: $0.bbox,
+                            modelLabel: $0.modelLabel,
+                            notes: "frame=\(ts)"
+                        )
+                    })
+                }
+            }
+
+            guard sampledFrames > 0 else { return StageOutput() }
+
+            var out = StageOutput()
+            var ar = AnalyzerResult(sourcePath: file.path)
+            ar.scaIsSensitive = sensitiveFrames > 0 ? true : nil
+            ar.reasonDetections = allDetections.isEmpty ? nil : Array(allDetections.prefix(200))
+
+            if explicitFrames >= 2 {
+                ar.nsfwSeverity = .explicit
+                ar.nsfwScore = min(bestScore + 0.2, 2.5)
+            } else {
+                ar.nsfwSeverity = bestSeverity
+                ar.nsfwScore = bestScore
+            }
+
+            applyModelStamps(to: &ar, context: context)
+            out.analyzerResults = [ar]
+            return out
+            #else
+            _ = (file, context)
+            return StageOutput()
+            #endif
+        }
+
+        private func applyModelStamps(to ar: inout AnalyzerResult, context: ScanContext) {
 
             // Repro stamps
             ar.aiModelName = context.settings.aiModelName
@@ -431,9 +537,6 @@ public actor ScannerEngine {
             ar.aiEngineVersion = context.settings.engineVersion
             ar.aiSettingsFingerprint = context.settingsFingerprint
             ar.scoringVersion = 1
-
-            out.analyzerResults = [ar]
-            return out
         }
 
         private static func scoreDetections(detections: [ReasonDetection], scaSensitive: Bool?) -> (Double, NSFWSeverity) {
@@ -472,6 +575,15 @@ public actor ScannerEngine {
             }
             return (score, severity)
         }
+
+        private func severityPriority(_ severity: NSFWSeverity) -> Int {
+            switch severity {
+            case .unknown: return 0
+            case .none: return 1
+            case .suggestive: return 2
+            case .explicit: return 3
+            }
+        }
     }
 
     /// Embedding-based semantic index.
@@ -483,12 +595,13 @@ public actor ScannerEngine {
 
         func process(file: URL, data: Data, context: ScanContext) async -> StageOutput {
             guard context.enableEmbeddings else { return StageOutput() }
+            let fileContentHash = Hashing.hexSHA256(data)
 
             // Today: embed a stable, searchable string derived from file identity.
             // Next: extend to extracted strings / EXIF / decoded messages.
             let canonicalText = EmbeddingCanonicalizer.canonicalText(
                 filePath: file.path,
-                runID: context.runID,
+                fileContentHash: fileContentHash,
                 settingsFingerprint: context.settingsFingerprint,
                 embeddingModelID: context.settings.embeddingModelID
             )
@@ -598,7 +711,7 @@ public actor ScannerEngine {
             var seen = Set<String>()
             var out: [FoundItem] = []
             for item in items {
-                let key = item.sourcePath
+                let key = item.contentHash ?? item.sourcePath
                 if seen.contains(key) { continue }
                 seen.insert(key)
                 out.append(item)
@@ -610,7 +723,8 @@ public actor ScannerEngine {
             for item in items {
                 let size = (try? URL(fileURLWithPath: item.sourcePath)
                     .resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                let key = "\(size)|\(item.sourcePath)"
+                let hash = item.contentHash ?? item.sourcePath
+                let key = "\(size)|\(hash)"
                 if seen.contains(key) { continue }
                 seen.insert(key)
                 out.append(item)
@@ -700,6 +814,11 @@ public actor ScannerEngine {
         try data.write(to: url)
     }
 
+    private func hashJSON<T: Encodable>(_ value: T) throws -> String {
+        let data = try JSONEncoder.stable.encode(value)
+        return Hashing.hexSHA256(data)
+    }
+
     private func buildAIReport(run: ScanRun) -> RunAIReport {
         let modelHash = AIEngine.shared.detectorModelHash(
             modelName: run.settings.aiModelName,
@@ -750,6 +869,14 @@ private struct RunManifest: Codable, Sendable {
     var embeddingEnabled: Bool
     var embeddingModelID: String
     var embeddingModelIdentifier: String
+    var caseMetadata: ForensicCaseMetadata
+    var reportIntegrityHash: String
+}
+
+private struct IntegrityPayload: Codable, Sendable {
+    var settings: ScanSettings
+    var forensic: ForensicSummary
+    var items: [FoundItem]
 }
 
 private struct RunAIReport: Codable, Sendable {

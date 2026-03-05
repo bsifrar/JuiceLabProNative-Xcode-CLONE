@@ -74,6 +74,9 @@
 				Engine/juicesuite_engine.py,
 				JuiceLabProNativeTests/JuiceLabProNativeTests.swift,
 				Sources/JuiceLabCore/Engine/AI/AIEngine.swift,
+				Sources/JuiceLabCore/Engine/AI/EmbeddingCanonicalizer.swift,
+				Sources/JuiceLabCore/Engine/AI/EmbeddingEngine.swift,
+				Sources/JuiceLabCore/Engine/AI/EmbeddingStore.swift,
 				Sources/JuiceLabCore/Engine/ScannerEngine.swift,
 				Sources/JuiceLabCore/Engine/SignatureRegistry.swift,
 				Sources/JuiceLabCore/Models/ScanModels.swift,
@@ -101,6 +104,9 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Sources/JuiceLabCore/Engine/AI/AIEngine.swift,
+				Sources/JuiceLabCore/Engine/AI/EmbeddingCanonicalizer.swift,
+				Sources/JuiceLabCore/Engine/AI/EmbeddingEngine.swift,
+				Sources/JuiceLabCore/Engine/AI/EmbeddingStore.swift,
 				Sources/JuiceLabCore/Engine/ScannerEngine.swift,
 				Sources/JuiceLabCore/Engine/SignatureRegistry.swift,
 				Sources/JuiceLabCore/Models/ScanModels.swift,

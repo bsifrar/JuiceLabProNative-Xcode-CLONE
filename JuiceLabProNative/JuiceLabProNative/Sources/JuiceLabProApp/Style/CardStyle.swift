@@ -7,13 +7,22 @@ struct CardSurface: ViewModifier {
             .padding(14)
             .background(
                 RoundedRectangle(cornerRadius: 16)
-                    .fill(Color(nsColor: .windowBackgroundColor).opacity(0.6))
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(nsColor: .windowBackgroundColor).opacity(0.9),
+                                Color(nsColor: .underPageBackgroundColor).opacity(0.82)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
                     .overlay(
                         RoundedRectangle(cornerRadius: 16)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
                     )
             )
-            .shadow(color: .black.opacity(0.16), radius: 8, x: 0, y: 4)
+            .shadow(color: .black.opacity(0.22), radius: 12, x: 0, y: 8)
     }
 }
 

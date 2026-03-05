@@ -7,7 +7,7 @@ import Foundation
 enum EmbeddingCanonicalizer {
     static func canonicalText(
         filePath: String,
-        runID: UUID,
+        fileContentHash: String,
         settingsFingerprint: String,
         embeddingModelID: String
     ) -> String {
@@ -16,10 +16,10 @@ enum EmbeddingCanonicalizer {
         // Do not include timestamps or non-deterministic values.
         return [
             "v=1",
-            "run=\(runID.uuidString)",
             "settings=\(settingsFingerprint)",
             "embedModel=\(embeddingModelID)",
-            "path=\(filePath)"
+            "contentHash=\(fileContentHash)",
+            "file=\(URL(fileURLWithPath: filePath).lastPathComponent)"
         ].joined(separator: "\n")
     }
 }

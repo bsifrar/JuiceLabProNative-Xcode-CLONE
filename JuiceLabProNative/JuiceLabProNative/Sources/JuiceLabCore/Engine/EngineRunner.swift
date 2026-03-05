@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import JuiceLabCore
 
 @MainActor
 final class EngineRunner: ObservableObject {

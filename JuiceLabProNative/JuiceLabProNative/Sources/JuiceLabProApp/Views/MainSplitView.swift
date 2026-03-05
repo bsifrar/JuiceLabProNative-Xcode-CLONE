@@ -389,6 +389,24 @@ private struct SettingsPanelView: View {
                     chooseOutputFolder()
                 }
             }
+            Section("Case Metadata (Chain of Custody)") {
+                TextField("Case Number", text: $vm.settings.caseMetadata.caseNumber)
+                TextField("Investigator", text: $vm.settings.caseMetadata.investigator)
+                TextField("Agency", text: $vm.settings.caseMetadata.agency)
+                TextField("Evidence Description", text: $vm.settings.caseMetadata.evidenceDescription, axis: .vertical)
+                    .lineLimit(2...4)
+                DatePicker(
+                    "Acquisition Date",
+                    selection: Binding(
+                        get: { vm.settings.caseMetadata.acquisitionDate ?? Date() },
+                        set: { vm.settings.caseMetadata.acquisitionDate = $0 }
+                    ),
+                    displayedComponents: [.date, .hourAndMinute]
+                )
+                TextField("Classification", text: $vm.settings.caseMetadata.classification)
+                TextField("Notes", text: $vm.settings.caseMetadata.notes, axis: .vertical)
+                    .lineLimit(2...5)
+            }
             Section("Quick Categories") {
                 let all = Set(SignatureRegistry.signatures.map { $0.type })
                 let images = Set(SignatureRegistry.signatures.filter { $0.category == .images }.map { $0.type })
@@ -482,13 +500,29 @@ private struct ForensicDashboardView: View {
                         Text("No analyzer results yet.").foregroundStyle(.secondary)
                     } else {
                         ForEach(f.analyzerResults, id: \.sourcePath) { r in
-                            HStack {
-                                Text(URL(fileURLWithPath: r.sourcePath).lastPathComponent).bold()
-                                Spacer()
-                                if let p = r.stringsPath { Button("Strings") { NSWorkspace.shared.open(URL(fileURLWithPath: p)) } }
-                                Text("Media: \(r.carvedMediaCount)")
-                                if r.sqliteHeaderDetected { Text("SQLite").foregroundStyle(.green) }
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text(URL(fileURLWithPath: r.sourcePath).lastPathComponent).bold()
+                                    Spacer()
+                                    Text(r.nsfwSeverity.rawValue.capitalized)
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(Capsule().fill(r.nsfwSeverity == .explicit ? Color.red.opacity(0.2) : Color.orange.opacity(0.2)))
+                                }
+                                HStack(spacing: 12) {
+                                    Text(String(format: "Score %.2f", r.nsfwScore))
+                                    Text("Reasons: \(r.reasonDetections?.count ?? 0)")
+                                    Text("Media: \(r.carvedMediaCount)")
+                                    if r.sqliteHeaderDetected { Text("SQLite").foregroundStyle(.green) }
+                                    if let p = r.stringsPath {
+                                        Button("Strings") { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
+                                    }
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             }
+                            .padding(.vertical, 2)
                         }
                     }
                 }
@@ -513,4 +547,3 @@ private struct SummaryCard: View {
 }
 
 #endif
-

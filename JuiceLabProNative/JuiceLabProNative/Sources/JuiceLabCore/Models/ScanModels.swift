@@ -54,6 +54,7 @@ public struct FoundItem: Identifiable, Codable, Hashable, Sendable {
     public let fileExtension: String
     public let confidence: Double
     public let validationStatus: ValidationStatus
+    public var contentHash: String?
     public var outputPath: String?
 
     public init(
@@ -66,6 +67,7 @@ public struct FoundItem: Identifiable, Codable, Hashable, Sendable {
         fileExtension: String,
         confidence: Double,
         validationStatus: ValidationStatus,
+        contentHash: String? = nil,
         outputPath: String? = nil
     ) {
         self.id = id
@@ -77,6 +79,7 @@ public struct FoundItem: Identifiable, Codable, Hashable, Sendable {
         self.fileExtension = fileExtension
         self.confidence = confidence
         self.validationStatus = validationStatus
+        self.contentHash = contentHash
         self.outputPath = outputPath
     }
 }
@@ -242,6 +245,34 @@ public struct ForensicSummary: Codable, Sendable {
 
 // MARK: - Settings / Run
 
+public struct ForensicCaseMetadata: Codable, Sendable {
+    public var caseNumber: String
+    public var investigator: String
+    public var agency: String
+    public var evidenceDescription: String
+    public var acquisitionDate: Date?
+    public var classification: String
+    public var notes: String
+
+    public init(
+        caseNumber: String = "",
+        investigator: String = "",
+        agency: String = "",
+        evidenceDescription: String = "",
+        acquisitionDate: Date? = nil,
+        classification: String = "",
+        notes: String = ""
+    ) {
+        self.caseNumber = caseNumber
+        self.investigator = investigator
+        self.agency = agency
+        self.evidenceDescription = evidenceDescription
+        self.acquisitionDate = acquisitionDate
+        self.classification = classification
+        self.notes = notes
+    }
+}
+
 public struct ScanSettings: Codable, Sendable {
     // versioning for reproducibility
     public var schemaVersion: Int
@@ -269,6 +300,7 @@ public struct ScanSettings: Codable, Sendable {
     public var enableEmbeddings: Bool
     public var embeddingModelID: String
     public var exportEmbeddingsSnapshot: Bool
+    public var caseMetadata: ForensicCaseMetadata
 
     public init(
         schemaVersion: Int = 1,
@@ -296,7 +328,8 @@ public struct ScanSettings: Codable, Sendable {
         aiComputePreference: AIComputePreference = .systemDefault,
         enableEmbeddings: Bool = true,
         embeddingModelID: String = "apple_nlembedding_sentence_en",
-        exportEmbeddingsSnapshot: Bool = false
+        exportEmbeddingsSnapshot: Bool = false,
+        caseMetadata: ForensicCaseMetadata = ForensicCaseMetadata()
     ) {
         self.schemaVersion = schemaVersion
         self.engineVersion = engineVersion
@@ -314,6 +347,7 @@ public struct ScanSettings: Codable, Sendable {
         self.enableEmbeddings = enableEmbeddings
         self.embeddingModelID = embeddingModelID
         self.exportEmbeddingsSnapshot = exportEmbeddingsSnapshot
+        self.caseMetadata = caseMetadata
     }
 }
 
