@@ -24,6 +24,10 @@ import UniformTypeIdentifiers
 import CryptoKit
 #endif
 
+#if canImport(SQLite3)
+import SQLite3
+#endif
+
 #if canImport(ZIPFoundation)
 import ZIPFoundation
 #endif
@@ -285,8 +289,10 @@ public actor ScannerEngine {
         // 1) Copy files
         let exportedItems = exportItems(run: run, to: runRoot)
         updated.items = exportedItems
-        _ = generateBinaryStringArtifacts(for: &updated, at: runRoot)
+        _ = generateSQLiteArtifacts(for: &updated, at: runRoot)
+        _ = generatePlistArtifacts(for: &updated, at: runRoot)
         _ = generatePDFTextArtifacts(for: &updated, at: runRoot)
+        _ = generateBinaryStringArtifacts(for: &updated, at: runRoot)
         _ = try generateHeatmaps(for: &updated, at: runRoot)
 
         // 2) Core artifacts
@@ -800,7 +806,8 @@ public actor ScannerEngine {
 
         // Always include common container/binary artifacts so carving can discover embedded media.
         let carveCandidates: Set<String> = [
-            "dat", "bin", "db", "sqlite", "cache", "thumb", "thumbs", "blob", "tmp", "raw"
+            "dat", "bin", "db", "sqlite", "sqlite3", "cache", "thumb", "thumbs", "blob", "tmp", "raw",
+            "plist", "bplist", "rem", "cod", "bbb", "ipd"
         ]
         return carveCandidates.contains(ext)
     }
@@ -1044,12 +1051,99 @@ public actor ScannerEngine {
         return created
     }
 
+    private func generateSQLiteArtifacts(for run: inout ScanRun, at runRoot: URL) -> Int {
+        let reportDir = runRoot.appendingPathComponent("sqlite_reports", isDirectory: true)
+        try? FileManager.default.createDirectory(at: reportDir, withIntermediateDirectories: true)
+
+        let sqliteExts: Set<String> = ["sqlite", "sqlite3", "db", "sqlitedb"]
+        var processed = Set<String>()
+        var created = 0
+
+        for item in run.items {
+            if processed.contains(item.sourcePath) { continue }
+            processed.insert(item.sourcePath)
+
+            let src = URL(fileURLWithPath: item.sourcePath)
+            let ext = src.pathExtension.lowercased()
+            let hasSQLiteHeader = hasSQLiteHeader(path: item.sourcePath)
+            if !sqliteExts.contains(ext), !item.detectedType.lowercased().contains("sqlite"), !hasSQLiteHeader {
+                continue
+            }
+
+            guard let report = extractSQLiteReport(from: item.sourcePath) else { continue }
+
+            let stem = sanitizedFileStem(item.sourcePath)
+            var dst = reportDir.appendingPathComponent("\(stem).sqlite.txt")
+            if FileManager.default.fileExists(atPath: dst.path) {
+                dst = reportDir.appendingPathComponent("\(stem)-\(item.id.uuidString.prefix(8)).sqlite.txt")
+            }
+
+            do {
+                try report.write(to: dst, atomically: true, encoding: .utf8)
+                upsertAnalyzerArtifact(
+                    run: &run,
+                    sourcePath: item.sourcePath,
+                    artifactPath: dst.path,
+                    sqliteDetected: true
+                )
+                created += 1
+            } catch {
+                continue
+            }
+        }
+
+        return created
+    }
+
+    private func generatePlistArtifacts(for run: inout ScanRun, at runRoot: URL) -> Int {
+        let reportDir = runRoot.appendingPathComponent("plist_reports", isDirectory: true)
+        try? FileManager.default.createDirectory(at: reportDir, withIntermediateDirectories: true)
+
+        var processed = Set<String>()
+        var created = 0
+
+        for item in run.items {
+            if processed.contains(item.sourcePath) { continue }
+            processed.insert(item.sourcePath)
+
+            let sourceURL = URL(fileURLWithPath: item.sourcePath)
+            let ext = sourceURL.pathExtension.lowercased()
+            let hasPlistHeader = hasBPlistHeader(path: item.sourcePath)
+            if ext != "plist" && ext != "bplist" && !hasPlistHeader {
+                continue
+            }
+
+            guard let report = extractPlistReport(from: item.sourcePath) else { continue }
+
+            let stem = sanitizedFileStem(item.sourcePath)
+            var dst = reportDir.appendingPathComponent("\(stem).plist.txt")
+            if FileManager.default.fileExists(atPath: dst.path) {
+                dst = reportDir.appendingPathComponent("\(stem)-\(item.id.uuidString.prefix(8)).plist.txt")
+            }
+
+            do {
+                try report.write(to: dst, atomically: true, encoding: .utf8)
+                upsertAnalyzerArtifact(
+                    run: &run,
+                    sourcePath: item.sourcePath,
+                    artifactPath: dst.path
+                )
+                created += 1
+            } catch {
+                continue
+            }
+        }
+
+        return created
+    }
+
     private func generateBinaryStringArtifacts(for run: inout ScanRun, at runRoot: URL) -> Int {
         let stringsDir = runRoot.appendingPathComponent("strings", isDirectory: true)
         try? FileManager.default.createDirectory(at: stringsDir, withIntermediateDirectories: true)
 
         let binaryExts: Set<String> = [
-            "dat", "bin", "db", "sqlite", "cache", "tmp", "blob", "raw", "log"
+            "dat", "bin", "db", "sqlite", "sqlite3", "cache", "tmp", "blob", "raw", "log",
+            "rem", "cod", "bbb", "ipd"
         ]
 
         var sourceToAnalyzerIndex: [String: Int] = [:]
@@ -1100,6 +1194,274 @@ public actor ScannerEngine {
         }
 
         return created
+    }
+
+    private func upsertAnalyzerArtifact(
+        run: inout ScanRun,
+        sourcePath: String,
+        artifactPath: String,
+        sqliteDetected: Bool = false
+    ) {
+        if let idx = run.forensic.analyzerResults.firstIndex(where: { $0.sourcePath == sourcePath }) {
+            if run.forensic.analyzerResults[idx].stringsPath == nil {
+                run.forensic.analyzerResults[idx].stringsPath = artifactPath
+            }
+            if sqliteDetected {
+                run.forensic.analyzerResults[idx].sqliteHeaderDetected = true
+            }
+            return
+        }
+
+        var ar = AnalyzerResult(sourcePath: sourcePath)
+        ar.stringsPath = artifactPath
+        ar.sqliteHeaderDetected = sqliteDetected
+        run.forensic.analyzerResults.append(ar)
+    }
+
+    private func extractPlistReport(from path: String) -> String? {
+        let url = URL(fileURLWithPath: path)
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe), !data.isEmpty else { return nil }
+
+        let cap = 16 * 1_048_576
+        let parseData: Data
+        if data.count > cap {
+            parseData = Data(data.prefix(cap))
+        } else {
+            parseData = data
+        }
+
+        var format = PropertyListSerialization.PropertyListFormat.binary
+        guard let plist = try? PropertyListSerialization.propertyList(
+            from: parseData,
+            options: [],
+            format: &format
+        ) else { return nil }
+
+        var lines: [String] = []
+        lines.append("# File: \(path)")
+        lines.append("# Format: \(format == .binary ? "binary" : "xml")")
+        lines.append("# Bytes parsed: \(parseData.count)")
+        lines.append("")
+        lines.append(contentsOf: renderPlist(value: plist, indent: 0, keyName: nil, maxDepth: 8, maxEntries: 5000))
+        return lines.joined(separator: "\n")
+    }
+
+    private func hasBPlistHeader(path: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return false }
+        if data.count < 8 { return false }
+        return data.prefix(8).elementsEqual(Data("bplist00".utf8))
+    }
+
+    private func hasSQLiteHeader(path: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return false }
+        if data.count < 16 { return false }
+        return data.prefix(16).elementsEqual(Data("SQLite format 3".utf8))
+    }
+
+    private func renderPlist(
+        value: Any,
+        indent: Int,
+        keyName: String?,
+        maxDepth: Int,
+        maxEntries: Int
+    ) -> [String] {
+        if maxEntries <= 0 {
+            return ["\(String(repeating: " ", count: indent))...truncated..."]
+        }
+        if maxDepth <= 0 {
+            let keyPrefix = keyName.map { "\($0): " } ?? ""
+            return ["\(String(repeating: " ", count: indent))\(keyPrefix)<max-depth>"]
+        }
+
+        let pad = String(repeating: " ", count: indent)
+        let keyPrefix = keyName.map { "\($0): " } ?? ""
+
+        if let dict = value as? [String: Any] {
+            var out = ["\(pad)\(keyPrefix){"]
+            var remaining = maxEntries - 1
+            for key in dict.keys.sorted() {
+                if remaining <= 0 {
+                    out.append("\(pad)  ...truncated...")
+                    break
+                }
+                let nested = renderPlist(
+                    value: dict[key] as Any,
+                    indent: indent + 2,
+                    keyName: key,
+                    maxDepth: maxDepth - 1,
+                    maxEntries: remaining
+                )
+                out.append(contentsOf: nested)
+                remaining -= nested.count
+            }
+            out.append("\(pad)}")
+            return out
+        }
+
+        if let arr = value as? [Any] {
+            var out = ["\(pad)\(keyPrefix)["]
+            var remaining = maxEntries - 1
+            for (idx, element) in arr.enumerated() {
+                if remaining <= 0 {
+                    out.append("\(pad)  ...truncated...")
+                    break
+                }
+                let nested = renderPlist(
+                    value: element,
+                    indent: indent + 2,
+                    keyName: "[\(idx)]",
+                    maxDepth: maxDepth - 1,
+                    maxEntries: remaining
+                )
+                out.append(contentsOf: nested)
+                remaining -= nested.count
+            }
+            out.append("\(pad)]")
+            return out
+        }
+
+        if let data = value as? Data {
+            let preview = data.prefix(24).map { String(format: "%02x", $0) }.joined()
+            return ["\(pad)\(keyPrefix)<Data \(data.count) bytes preview=\(preview)>"]
+        }
+        if let date = value as? Date {
+            return ["\(pad)\(keyPrefix)\(ISO8601DateFormatter().string(from: date))"]
+        }
+        return ["\(pad)\(keyPrefix)\(String(describing: value))"]
+    }
+
+    private func extractSQLiteReport(from path: String) -> String? {
+        #if canImport(SQLite3)
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
+            if db != nil { sqlite3_close(db) }
+            return nil
+        }
+        defer { sqlite3_close(db) }
+
+        var lines: [String] = []
+        lines.append("# File: \(path)")
+        lines.append("# Type: SQLite")
+        lines.append("")
+
+        if let version = sqliteSingleString(db: db, sql: "PRAGMA user_version;"), !version.isEmpty {
+            lines.append("PRAGMA user_version: \(version)")
+        }
+
+        let tableNames = sqliteColumnStrings(
+            db: db,
+            sql: "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 60;"
+        )
+        lines.append("Tables found: \(tableNames.count)")
+        lines.append("")
+
+        for table in tableNames {
+            let escaped = table.replacingOccurrences(of: "\"", with: "\"\"")
+            let countSQL = "SELECT COUNT(*) FROM \"\(escaped)\";"
+            let rowCount = sqliteSingleString(db: db, sql: countSQL) ?? "?"
+            lines.append("## Table: \(table) (rows=\(rowCount))")
+
+            let sampleSQL = "SELECT * FROM \"\(escaped)\" LIMIT 12;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sampleSQL, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+                lines.append("  <failed to read sample rows>")
+                lines.append("")
+                continue
+            }
+
+            let colCount = Int(sqlite3_column_count(stmt))
+            var headers: [String] = []
+            for i in 0..<colCount {
+                headers.append(String(cString: sqlite3_column_name(stmt, Int32(i))))
+            }
+            lines.append("  Columns: \(headers.joined(separator: ", "))")
+
+            var rowIndex = 0
+            while sqlite3_step(stmt) == SQLITE_ROW, rowIndex < 12 {
+                var cols: [String] = []
+                for i in 0..<colCount {
+                    let key = headers[i]
+                    cols.append("\(key)=\(sqliteColumnValue(stmt: stmt, index: i, maxText: 240))")
+                }
+                lines.append("  [\(rowIndex)] \(cols.joined(separator: " | "))")
+                rowIndex += 1
+            }
+            sqlite3_finalize(stmt)
+            lines.append("")
+        }
+
+        return lines.joined(separator: "\n")
+        #else
+        _ = path
+        return nil
+        #endif
+    }
+
+    private func sqliteSingleString(db: OpaquePointer, sql: String) -> String? {
+        #if canImport(SQLite3)
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return sqliteColumnValue(stmt: stmt, index: 0, maxText: 240)
+        #else
+        _ = (db, sql)
+        return nil
+        #endif
+    }
+
+    private func sqliteColumnStrings(db: OpaquePointer, sql: String) -> [String] {
+        #if canImport(SQLite3)
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return [] }
+        defer { sqlite3_finalize(stmt) }
+
+        var out: [String] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let value = sqliteColumnValue(stmt: stmt, index: 0, maxText: 200)
+            if !value.isEmpty {
+                out.append(value)
+            }
+        }
+        return out
+        #else
+        _ = (db, sql)
+        return []
+        #endif
+    }
+
+    private func sqliteColumnValue(stmt: OpaquePointer, index: Int, maxText: Int) -> String {
+        #if canImport(SQLite3)
+        let type = sqlite3_column_type(stmt, Int32(index))
+        switch type {
+        case SQLITE_INTEGER:
+            return String(sqlite3_column_int64(stmt, Int32(index)))
+        case SQLITE_FLOAT:
+            return String(format: "%.6f", sqlite3_column_double(stmt, Int32(index)))
+        case SQLITE_TEXT:
+            guard let c = sqlite3_column_text(stmt, Int32(index)) else { return "" }
+            let text = String(cString: c)
+            if text.count > maxText {
+                return String(text.prefix(maxText)) + "...<truncated>"
+            }
+            return text
+        case SQLITE_BLOB:
+            let len = Int(sqlite3_column_bytes(stmt, Int32(index)))
+            guard let ptr = sqlite3_column_blob(stmt, Int32(index)), len > 0 else { return "<BLOB 0 bytes>" }
+            let blob = Data(bytes: ptr, count: min(len, 64))
+            let preview = blob.map { String(format: "%02x", $0) }.joined()
+            return "<BLOB \(len) bytes preview=\(preview)>"
+        case SQLITE_NULL:
+            return "NULL"
+        default:
+            return "<unknown>"
+        }
+        #else
+        _ = (stmt, index, maxText)
+        return ""
+        #endif
     }
 
     private func extractMeaningfulStrings(from path: String) -> String? {

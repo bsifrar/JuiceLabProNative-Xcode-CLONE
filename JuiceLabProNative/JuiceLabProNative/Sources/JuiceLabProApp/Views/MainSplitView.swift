@@ -415,7 +415,13 @@ private struct SettingsPanelView: View {
                     .lineLimit(2...5)
             }
             Section("Quick Categories") {
-                let all = Set(SignatureRegistry.signatures.map { $0.type })
+                let forensicExtras: Set<String> = [
+                    "sqlite", "sqlite3", "db", "sqlitedb", "plist", "bplist",
+                    "dat", "bin", "raw", "tmp", "blob", "cache", "thumb", "thumbs",
+                    "rem", "cod", "bbb", "ipd",
+                    "txt", "md", "rtf", "csv", "json", "xml", "html", "htm", "log"
+                ]
+                let all = Set(SignatureRegistry.signatures.map { $0.type }).union(forensicExtras)
                 let images = Set(SignatureRegistry.signatures.filter { $0.category == .images }.map { $0.type })
                 let audio = Set(SignatureRegistry.signatures.filter { $0.category == .audio }.map { $0.type })
                 let video = Set(SignatureRegistry.signatures.filter { $0.category == .video }.map { $0.type })

@@ -319,11 +319,14 @@ public struct ScanSettings: Codable, Sendable {
         performanceMode: PerformanceMode = .balanced,
         enabledTypes: Set<String> = [
             "jpeg", "png", "gif", "webp",
-            "pdf",
+            "pdf", "txt", "md", "rtf", "csv", "json", "xml", "html", "htm", "log",
             "zip", "rar", "7z", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz", "lz4", "zst", "ar", "deb", "rpm",
             "mp3", "wav", "flac", "ogg", "m4a", "aac", "alac",
             "mp4", "mov", "avi", "mkv", "mpeg", "m2ts", "webm",
-            "tiff", "tif", "bmp", "ico", "psd", "dds", "heic", "heif", "heifs", "heics"
+            "tiff", "tif", "bmp", "ico", "psd", "dds", "heic", "heif", "heifs", "heics",
+            "sqlite", "sqlite3", "db", "sqlitedb", "plist", "bplist",
+            "dat", "bin", "raw", "tmp", "blob", "cache", "thumb", "thumbs",
+            "rem", "cod", "bbb", "ipd"
         ],
         enableAI: Bool = false,
         aiModelName: String = "NSFWReasons",
