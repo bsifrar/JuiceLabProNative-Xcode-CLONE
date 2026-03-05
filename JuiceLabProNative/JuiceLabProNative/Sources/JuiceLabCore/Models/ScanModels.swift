@@ -238,6 +238,7 @@ public struct ForensicSummary: Codable, Sendable {
     public var possibleDecryptableDBs: Int = 0
     public var keyFiles: [String] = []
     public var nestedArchives: Int = 0
+    public var metrics: [String: Int]? = nil
 
     public var analyzerResults: [AnalyzerResult] = []
     public var stageTimings: [StageTiming] = []

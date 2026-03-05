@@ -581,11 +581,28 @@ private struct ForensicDashboardView: View {
             Text("Forensic Summary").font(.title3.bold())
             if let run = vm.activeRun {
                 let f = run.forensic
+                let metrics = f.metrics ?? [:]
                 HStack {
                     SummaryCard(title: ".REM Files", value: "\(f.remCount)")
                     SummaryCard(title: "Media Recovered", value: "\(f.mediaCount)")
                     SummaryCard(title: "Possible Decryptable DBs", value: "\(f.possibleDecryptableDBs)")
                     SummaryCard(title: "Nested Archives", value: "\(f.nestedArchives)")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack {
+                    SummaryCard(title: "Decryptable Signals", value: "\(metrics["decryptable"] ?? 0)")
+                    SummaryCard(title: "Thumbnails", value: "\(metrics["thumbnails"] ?? 0)")
+                    SummaryCard(title: "Message Signals", value: "\(metrics["messages"] ?? 0)")
+                    SummaryCard(title: "Keys", value: "\(max(metrics["keys"] ?? 0, f.keyFiles.count))")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack {
+                    SummaryCard(title: "Emails", value: "\(metrics["emails"] ?? 0)")
+                    SummaryCard(title: "URLs", value: "\(metrics["urls"] ?? 0)")
+                    SummaryCard(title: "Phones", value: "\(metrics["phones"] ?? 0)")
+                    SummaryCard(title: "Language Text", value: "\(metrics["language_signals"] ?? 0)")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 

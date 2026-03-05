@@ -79,6 +79,7 @@ public actor ScannerEngine {
         var possibleDecryptableDBs: Int = 0
         var keyFiles: [String] = []
         var nestedArchives: Int = 0
+        var metrics: [String: Int] = [:]
 
         mutating func merge(_ other: ForensicDelta) {
             remCount += other.remCount
@@ -86,6 +87,11 @@ public actor ScannerEngine {
             possibleDecryptableDBs += other.possibleDecryptableDBs
             nestedArchives += other.nestedArchives
             if !other.keyFiles.isEmpty { keyFiles.append(contentsOf: other.keyFiles) }
+            if !other.metrics.isEmpty {
+                for (k, v) in other.metrics {
+                    metrics[k, default: 0] += v
+                }
+            }
         }
     }
 
@@ -236,6 +242,13 @@ public actor ScannerEngine {
                     run.forensic.possibleDecryptableDBs += out.forensicDelta.possibleDecryptableDBs
                     run.forensic.nestedArchives += out.forensicDelta.nestedArchives
                     if !out.forensicDelta.keyFiles.isEmpty { run.forensic.keyFiles.append(contentsOf: out.forensicDelta.keyFiles) }
+                    if !out.forensicDelta.metrics.isEmpty {
+                        var existing = run.forensic.metrics ?? [:]
+                        for (k, v) in out.forensicDelta.metrics {
+                            existing[k, default: 0] += v
+                        }
+                        run.forensic.metrics = existing
+                    }
 
                     if !out.analyzerResults.isEmpty {
                         run.forensic.analyzerResults.append(contentsOf: out.analyzerResults)
@@ -378,8 +391,9 @@ public actor ScannerEngine {
             if ext == "rem" { out.forensicDelta.remCount += 1 }
 
             let lower = file.lastPathComponent.lowercased()
-            if lower.contains("key") || lower.contains("keys") {
+            if lower.contains("key") || lower.contains("keys") || ext == "key" {
                 out.forensicDelta.keyFiles.append(file.path)
+                out.forensicDelta.metrics["keys"] = 1
             }
 
             if data.count >= 16,
@@ -387,7 +401,70 @@ public actor ScannerEngine {
                header.hasPrefix("SQLite format 3") {
                 out.forensicDelta.possibleDecryptableDBs += 1
             }
+
+            if lower.contains("thumb") || lower.contains("ithmb") || looksLikeThumbsContainer(data) {
+                out.forensicDelta.metrics["thumbnails"] = 1
+            }
+
+            if ["rem", "dat", "cod", "ipd", "bbb"].contains(ext), hasSiblingKeyFile(for: file) {
+                out.forensicDelta.metrics["decryptable"] = 1
+            }
+
+            let indicators = extractForensicTextIndicators(from: data)
+            if indicators.messageSignals > 0 { out.forensicDelta.metrics["messages"] = indicators.messageSignals }
+            if indicators.emails > 0 { out.forensicDelta.metrics["emails"] = indicators.emails }
+            if indicators.urls > 0 { out.forensicDelta.metrics["urls"] = indicators.urls }
+            if indicators.phones > 0 { out.forensicDelta.metrics["phones"] = indicators.phones }
+            if indicators.languageSignals > 0 { out.forensicDelta.metrics["language_signals"] = indicators.languageSignals }
             return out
+        }
+
+        private func hasSiblingKeyFile(for file: URL) -> Bool {
+            let dir = file.deletingLastPathComponent()
+            guard let entries = try? FileManager.default.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) else { return false }
+            return entries.contains { $0.pathExtension.lowercased() == "key" }
+        }
+
+        private func looksLikeThumbsContainer(_ data: Data) -> Bool {
+            if data.count >= 4 {
+                if data[0] == 0x22, data[1] == 0x06, data[2] == 0x20, data[3] == 0x09 { return true }
+                if data[0] == 0x24, data[1] == 0x05, data[2] == 0x20, data[3] == 0x03 { return true }
+            }
+            return false
+        }
+
+        private func extractForensicTextIndicators(from data: Data) -> (messageSignals: Int, emails: Int, urls: Int, phones: Int, languageSignals: Int) {
+            let sample = Data(data.prefix(2 * 1_048_576))
+            if sample.isEmpty { return (0, 0, 0, 0, 0) }
+
+            let raw = String(decoding: sample, as: UTF8.self)
+            if raw.isEmpty { return (0, 0, 0, 0, 0) }
+            let lower = raw.lowercased()
+
+            let messageKeywords = [
+                "message", "sms", "mms", "chat", "conversation", "inbox", "outbox", "sender", "recipient", "email"
+            ]
+            var msgHits = 0
+            for token in messageKeywords where lower.contains(token) { msgHits += 1 }
+
+            let emails = regexCount(pattern: #"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}"#, in: raw)
+            let urls = regexCount(pattern: #"https?://[^\s"']+"#, in: raw)
+            let phones = regexCount(pattern: #"\+?\d[\d\-\(\) ]{7,}\d"#, in: raw)
+
+            let alphabetic = raw.unicodeScalars.filter { CharacterSet.letters.contains($0) }.count
+            let languageSignals = alphabetic > 200 ? 1 : 0
+
+            return (msgHits, emails, urls, phones, languageSignals)
+        }
+
+        private func regexCount(pattern: String, in text: String) -> Int {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return 0 }
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            return regex.numberOfMatches(in: text, options: [], range: range)
         }
     }
 
@@ -488,6 +565,7 @@ public actor ScannerEngine {
 
             // BlackBerry thumbs*.dat style record parser (0x22062009 magic + 30-byte record header).
             if ext == "dat", let parsed = parseThumbsStructuredRecords(file: file, data: data, maxItems: maxItemsPerFile) {
+                out.forensicDelta.metrics["thumbnails", default: 0] += parsed.count
                 for item in parsed {
                     let key = "\(item.detectedType)|\(item.offset)|\(item.length)"
                     if seen.contains(key) { continue }
