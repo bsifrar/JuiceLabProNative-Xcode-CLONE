@@ -6,6 +6,8 @@ import JuiceLabCore
 
 @MainActor
 final class AppViewModel: ObservableObject {
+    private let maxVisibleItems = 2000
+
     enum Route: String, CaseIterable {
         case runs = "Runs"
         case results = "Results"
@@ -51,12 +53,16 @@ final class AppViewModel: ObservableObject {
     var filteredItems: [FoundItem] {
         guard let run = activeRun else { return [] }
         _ = itemTick // drive reevaluation
-        return run.items.filter { item in
+        let filtered = run.items.filter { item in
             selectedCategories.contains(item.category) &&
             (query.isEmpty ||
              item.sourcePath.localizedCaseInsensitiveContains(query) ||
              item.detectedType.localizedCaseInsensitiveContains(query))
         }
+        if filtered.count > maxVisibleItems {
+            return Array(filtered.prefix(maxVisibleItems))
+        }
+        return filtered
     }
 
     func addSources(_ urls: [URL]) {
@@ -89,12 +95,12 @@ final class AppViewModel: ObservableObject {
                 paths: droppedURLs,
                 settings: settings,
                 onProgress: { update in
-                    Task { @MainActor in
+                    DispatchQueue.main.async {
                         self.progress = update
                     }
                 },
                 onItem: { _ in
-                    Task { @MainActor in
+                    DispatchQueue.main.async {
                         self.throttledTick()
                     }
                 }
