@@ -272,12 +272,14 @@ public actor ScannerEngine {
         var updated = run
 
         let runDirName = "\(run.name)-\(Self.dateStamp())"
-        let runRoot = URL(fileURLWithPath: run.settings.outputFolder)
+        let baseOut = resolveWritableOutputBase(preferred: URL(fileURLWithPath: run.settings.outputFolder, isDirectory: true))
+        let runRoot = baseOut
             .appendingPathComponent(runDirName, isDirectory: true)
         try FileManager.default.createDirectory(at: runRoot, withIntermediateDirectories: true)
+        updated.settings.outputFolder = baseOut.path
 
         // 1) Copy files
-        let exportedItems = try exportItems(run: run, to: runRoot)
+        let exportedItems = exportItems(run: run, to: runRoot)
         updated.items = exportedItems
         _ = try generateHeatmaps(for: &updated, at: runRoot)
 
@@ -845,90 +847,117 @@ public actor ScannerEngine {
 
     // MARK: - Export helpers
 
-    private func exportItems(run: ScanRun, to root: URL) throws -> [FoundItem] {
+    private func exportItems(run: ScanRun, to root: URL) -> [FoundItem] {
         switch run.settings.organizationScheme {
         case .flat:
-            return try exportFlat(run.items, to: root)
+            return exportFlat(run.items, to: root)
         case .byType:
-            return try exportByType(run.items, to: root)
+            return exportByType(run.items, to: root)
         case .bySource:
-            return try exportBySource(run.items, to: root)
+            return exportBySource(run.items, to: root)
         }
     }
 
-    private func exportFlat(_ items: [FoundItem], to root: URL) throws -> [FoundItem] {
+    private func exportFlat(_ items: [FoundItem], to root: URL) -> [FoundItem] {
         var exported: [FoundItem] = []
         for item in items {
-            exported.append(try exportOne(item: item, to: root))
+            exported.append(exportOne(item: item, to: root))
         }
         return exported
     }
 
-    private func exportByType(_ items: [FoundItem], to root: URL) throws -> [FoundItem] {
+    private func exportByType(_ items: [FoundItem], to root: URL) -> [FoundItem] {
         var exported: [FoundItem] = []
         let groups = Dictionary(grouping: items, by: { $0.category })
         for (cat, arr) in groups {
             let dir = root.appendingPathComponent(cat.rawValue, isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             for item in arr {
-                exported.append(try exportOne(item: item, to: dir))
+                exported.append(exportOne(item: item, to: dir))
             }
         }
         return exported
     }
 
-    private func exportBySource(_ items: [FoundItem], to root: URL) throws -> [FoundItem] {
+    private func exportBySource(_ items: [FoundItem], to root: URL) -> [FoundItem] {
         var exported: [FoundItem] = []
         for item in items {
             let srcURL = URL(fileURLWithPath: item.sourcePath)
             let base = srcURL.deletingLastPathComponent().lastPathComponent
             let dir = root.appendingPathComponent(base, isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            exported.append(try exportOne(item: item, to: dir))
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            exported.append(exportOne(item: item, to: dir))
         }
         return exported
     }
 
-    private func exportOne(item: FoundItem, to dir: URL) throws -> FoundItem {
+    private func exportOne(item: FoundItem, to dir: URL) -> FoundItem {
         let src = URL(fileURLWithPath: item.sourcePath)
         let srcSize = (try? src.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? item.length
         let looksCarved = item.offset > 0 || (item.length > 0 && item.length < srcSize)
 
         if looksCarved {
-            let data = try Data(contentsOf: src, options: .mappedIfSafe)
-            let end = item.offset + item.length
+            if let data = try? Data(contentsOf: src, options: .mappedIfSafe) {
+                let end = item.offset + item.length
 
-            if item.offset >= 0, item.length > 0, end <= data.count {
-                let carvedBytes = data.subdata(in: item.offset..<end)
-                let ext = item.fileExtension.isEmpty ? (src.pathExtension.isEmpty ? "bin" : src.pathExtension) : item.fileExtension
-                let base = src.deletingPathExtension().lastPathComponent
-                let carvedName = "\(base)_0x\(String(item.offset, radix: 16)).\(ext)"
-                var carvedDst = dir.appendingPathComponent(carvedName)
+                if item.offset >= 0, item.length > 0, end <= data.count {
+                    let carvedBytes = data.subdata(in: item.offset..<end)
+                    let ext = item.fileExtension.isEmpty ? (src.pathExtension.isEmpty ? "bin" : src.pathExtension) : item.fileExtension
+                    let base = src.deletingPathExtension().lastPathComponent
+                    let carvedName = "\(base)_0x\(String(item.offset, radix: 16)).\(ext)"
+                    var carvedDst = dir.appendingPathComponent(carvedName)
 
-                if FileManager.default.fileExists(atPath: carvedDst.path) {
-                    carvedDst = dir.appendingPathComponent("\(UUID().uuidString)-\(carvedName)")
+                    if FileManager.default.fileExists(atPath: carvedDst.path) {
+                        carvedDst = dir.appendingPathComponent("\(UUID().uuidString)-\(carvedName)")
+                    }
+
+                    if (try? carvedBytes.write(to: carvedDst, options: .atomic)) != nil {
+                        var updated = item
+                        updated.outputPath = carvedDst.path
+                        return updated
+                    }
                 }
-
-                try carvedBytes.write(to: carvedDst, options: .atomic)
-
-                var updated = item
-                updated.outputPath = carvedDst.path
-                return updated
             }
         }
 
-        let dst = dir.appendingPathComponent(src.lastPathComponent)
+        let destinationDir = FileManager.default.fileExists(atPath: dir.path) ? dir : src.deletingLastPathComponent()
+        let dst = destinationDir.appendingPathComponent(src.lastPathComponent)
         let finalDst: URL
         if FileManager.default.fileExists(atPath: dst.path) {
-            finalDst = dir.appendingPathComponent("\(UUID().uuidString)-\(src.lastPathComponent)")
+            finalDst = destinationDir.appendingPathComponent("\(UUID().uuidString)-\(src.lastPathComponent)")
         } else {
             finalDst = dst
         }
+
         do { try FileManager.default.copyItem(at: src, to: finalDst) } catch { }
 
         var updated = item
         updated.outputPath = finalDst.path
         return updated
+    }
+
+    private func resolveWritableOutputBase(preferred: URL) -> URL {
+        let fm = FileManager.default
+        let appSupport = (fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory()))
+            .appendingPathComponent("JuiceLabPro", isDirectory: true)
+            .appendingPathComponent("Extracted", isDirectory: true)
+        let tempFallback = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("JuiceLabProExtracted", isDirectory: true)
+
+        let candidates = [preferred, appSupport, tempFallback]
+        for base in candidates {
+            do {
+                try fm.createDirectory(at: base, withIntermediateDirectories: true)
+                let probe = base.appendingPathComponent(".probe-\(UUID().uuidString)")
+                try Data().write(to: probe, options: .atomic)
+                try? fm.removeItem(at: probe)
+                return base
+            } catch {
+                continue
+            }
+        }
+        return preferred
     }
 
     private func generateHeatmaps(for run: inout ScanRun, at runRoot: URL) throws -> Int {
