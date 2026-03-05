@@ -185,9 +185,9 @@ private struct ResultsTableView: View {
             }
 
             Table(items, selection: Binding(get: {
-                vm.selectedItem.map { Set([$0.id]) } ?? []
-            }, set: { ids in
-                vm.selectedItem = items.first(where: { ids.contains($0.id) })
+                vm.selectedItem?.id
+            }, set: { selectedID in
+                vm.selectedItem = items.first(where: { $0.id == selectedID })
             })) {
                 TableColumn("Type") { Text($0.detectedType.uppercased()) }
                 TableColumn("Source") { Text(URL(fileURLWithPath: $0.sourcePath).lastPathComponent) }
@@ -277,10 +277,17 @@ private struct PreviewView: View {
                 ProgressView().controlSize(.small)
             }
         }
-        .task { await loadPreview() }
+        .task(id: item.id) { await loadPreview() }
     }
 
     private func loadPreview() async {
+        await MainActor.run {
+            self.nsImage = nil
+            self.previewText = ""
+            self.pdfDocument = nil
+            self.avPlayer = nil
+        }
+
         let path = item.outputPath ?? item.sourcePath
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: path) else {
