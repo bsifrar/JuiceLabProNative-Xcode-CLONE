@@ -468,12 +468,39 @@ public actor ScannerEngine {
             case .balanced: maxBytesToInspect = 96 * 1_048_576
             case .thorough: maxBytesToInspect = 256 * 1_048_576
             }
-            let scanEnd = min(data.count, maxBytesToInspect)
+            let datHeavyExts: Set<String> = ["dat", "thumb", "thumbs", "rem", "ipd"]
+            let effectiveInspectLimit: Int
+            if datHeavyExts.contains(ext) {
+                switch context.settings.performanceMode {
+                case .fast: effectiveInspectLimit = 128 * 1_048_576
+                case .balanced: effectiveInspectLimit = 384 * 1_048_576
+                case .thorough: effectiveInspectLimit = 768 * 1_048_576
+                }
+            } else {
+                effectiveInspectLimit = maxBytesToInspect
+            }
+            let scanEnd = min(data.count, effectiveInspectLimit)
 
             var out = StageOutput()
             var seen = Set<String>()
             var foundCount = 0
             var offset = 0
+
+            // BlackBerry thumbs*.dat style record parser (0x22062009 magic + 30-byte record header).
+            if ext == "dat", let parsed = parseThumbsStructuredRecords(file: file, data: data, maxItems: maxItemsPerFile) {
+                for item in parsed {
+                    let key = "\(item.detectedType)|\(item.offset)|\(item.length)"
+                    if seen.contains(key) { continue }
+                    seen.insert(key)
+                    out.items.append(item)
+                    out.forensicDelta.mediaCount += 1
+                    foundCount += 1
+                    if foundCount >= maxItemsPerFile {
+                        out.warnings.append("Carve limit reached (\(maxItemsPerFile)) for \(file.lastPathComponent)")
+                        return out
+                    }
+                }
+            }
 
             while offset < scanEnd {
                 if Task.isCancelled { break }
@@ -524,6 +551,95 @@ public actor ScannerEngine {
             }
 
             return out
+        }
+
+        private func parseThumbsStructuredRecords(file: URL, data: Data, maxItems: Int) -> [FoundItem]? {
+            guard data.count > 64 else { return nil }
+            // 0x22062009 (big endian) magic
+            if !(data[0] == 0x22 && data[1] == 0x06 && data[2] == 0x20 && data[3] == 0x09) {
+                return nil
+            }
+
+            var items: [FoundItem] = []
+            items.reserveCapacity(min(200, maxItems))
+
+            let starts = [4, 0]
+            for start in starts {
+                var offset = start
+                var accepted = 0
+
+                while offset + 30 <= data.count, accepted < maxItems {
+                    let pathNameLen = readUInt32BE(data: data, at: offset + 5)
+                    let fileNameLen = readUInt32BE(data: data, at: offset + 9)
+                    let dataLen = readUInt32BE(data: data, at: offset + 13)
+                    offset += 30
+
+                    if pathNameLen > 4096 || fileNameLen > 1024 || dataLen > 50 * 1_048_576 {
+                        break
+                    }
+                    let recordBytes = pathNameLen + fileNameLen + dataLen
+                    if recordBytes <= 0 || offset + recordBytes > data.count {
+                        break
+                    }
+
+                    offset += (pathNameLen + fileNameLen)
+                    let imageOffset = offset
+                    let imageEnd = imageOffset + dataLen
+                    if imageEnd > data.count {
+                        break
+                    }
+
+                    let ext = detectImageExtension(data: data, offset: imageOffset, length: dataLen)
+                    if let ext {
+                        let item = FoundItem(
+                            sourcePath: file.path,
+                            offset: imageOffset,
+                            length: dataLen,
+                            detectedType: ext == "jpg" ? "jpeg" : ext,
+                            category: .images,
+                            fileExtension: ext,
+                            confidence: 0.95,
+                            validationStatus: .valid,
+                            contentHash: nil,
+                            outputPath: nil
+                        )
+                        items.append(item)
+                        accepted += 1
+                    }
+
+                    offset = imageEnd
+                }
+
+                if !items.isEmpty {
+                    return items
+                }
+            }
+
+            return items.isEmpty ? nil : items
+        }
+
+        private func readUInt32BE(data: Data, at offset: Int) -> Int {
+            if offset + 4 > data.count { return 0 }
+            let b0 = Int(data[offset]) << 24
+            let b1 = Int(data[offset + 1]) << 16
+            let b2 = Int(data[offset + 2]) << 8
+            let b3 = Int(data[offset + 3])
+            return b0 | b1 | b2 | b3
+        }
+
+        private func detectImageExtension(data: Data, offset: Int, length: Int) -> String? {
+            guard length >= 4, offset + length <= data.count else { return nil }
+
+            let b0 = data[offset]
+            let b1 = data[offset + 1]
+            let b2 = data[offset + 2]
+            let b3 = data[offset + 3]
+
+            if b0 == 0xFF, b1 == 0xD8 { return "jpg" }
+            if b0 == 0x89, b1 == 0x50, b2 == 0x4E, b3 == 0x47 { return "png" }
+            if b0 == 0x47, b1 == 0x49, b2 == 0x46 { return "gif" }
+            if b0 == 0x42, b1 == 0x4D { return "bmp" }
+            return nil
         }
     }
 
