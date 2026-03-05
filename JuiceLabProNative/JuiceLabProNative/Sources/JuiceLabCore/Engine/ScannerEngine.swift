@@ -435,6 +435,21 @@ public actor ScannerEngine {
         let maxItemsPerFile = 1500
 
         func process(file: URL, data: Data, context: ScanContext) async -> StageOutput {
+            let ext = file.pathExtension.lowercased()
+            let archiveExts: Set<String> = [
+                "zip", "rar", "7z", "tar", "tgz", "gz", "bz2", "xz", "zst", "deb", "rpm", "ar", "tbz2", "txz"
+            ]
+            if archiveExts.contains(ext) {
+                return StageOutput()
+            }
+
+            let carveTargetExts: Set<String> = [
+                "dat", "bin", "raw", "tmp", "blob", "cache", "thumb", "thumbs", "rem", "cod", "bbb", "ipd"
+            ]
+            if !carveTargetExts.contains(ext), ext != "", ext != "db", ext != "sqlite", ext != "sqlite3" {
+                return StageOutput()
+            }
+
             guard data.count >= 64 else { return StageOutput() }
 
             let stride: Int
