@@ -25,6 +25,7 @@ final class AppViewModel: ObservableObject {
     @Published var progress = ScanProgress()
     @Published var isScanning = false
     @Published var droppedURLs: [URL] = []
+    @Published var statusMessage: String = ""
 
     /// UI refresh signal (throttled)
     @Published private(set) var itemTick: Int = 0
@@ -78,6 +79,8 @@ final class AppViewModel: ObservableObject {
     func startScan() {
         guard !droppedURLs.isEmpty, !isScanning else { return }
         isScanning = true
+        statusMessage = ""
+        progress = ScanProgress()
 
         scanTask?.cancel()
 
@@ -91,8 +94,20 @@ final class AppViewModel: ObservableObject {
                 }
             }
 
+            let accessible = validateReadableSources(scopedRoots.map(\.0))
+            if !accessible.unreadable.isEmpty {
+                statusMessage = "Unreadable sources skipped: \(accessible.unreadable.joined(separator: ", "))"
+            }
+            if accessible.readable.isEmpty {
+                isScanning = false
+                if statusMessage.isEmpty {
+                    statusMessage = "No readable sources. Re-add files with Add Sources and try again."
+                }
+                return
+            }
+
             let run = await engine.scan(
-                paths: droppedURLs,
+                paths: accessible.readable,
                 settings: settings,
                 onProgress: { update in
                     DispatchQueue.main.async {
@@ -116,6 +131,7 @@ final class AppViewModel: ObservableObject {
                 doneRun = try await engine.export(run: run)
             } catch {
                 doneRun = run
+                statusMessage = "Export warning: \(error.localizedDescription)"
             }
 
             if Task.isCancelled {
@@ -126,6 +142,13 @@ final class AppViewModel: ObservableObject {
             runs.insert(doneRun, at: 0)
             selectedRunID = doneRun.id
             try? await history.save(run: doneRun)
+            if doneRun.items.isEmpty {
+                statusMessage = "Scan completed with 0 items. Try enabling All types or adding a different source."
+            } else if !doneRun.warnings.isEmpty {
+                statusMessage = "Scan completed with warnings (\(doneRun.warnings.count))."
+            } else {
+                statusMessage = "Scan completed: \(doneRun.items.count) items."
+            }
             isScanning = false
         }
     }
@@ -155,6 +178,34 @@ final class AppViewModel: ObservableObject {
                 self.pendingTick = false
             }
         }
+    }
+
+    private func validateReadableSources(_ urls: [URL]) -> (readable: [URL], unreadable: [String]) {
+        var readable: [URL] = []
+        var unreadable: [String] = []
+        let fm = FileManager.default
+
+        for url in urls {
+            let path = url.path
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: path, isDirectory: &isDir) else {
+                unreadable.append(url.lastPathComponent)
+                continue
+            }
+
+            if isDir.boolValue {
+                if (try? fm.contentsOfDirectory(atPath: path)) != nil {
+                    readable.append(url)
+                } else {
+                    unreadable.append(url.lastPathComponent)
+                }
+            } else if fm.isReadableFile(atPath: path) {
+                readable.append(url)
+            } else {
+                unreadable.append(url.lastPathComponent)
+            }
+        }
+        return (readable, unreadable)
     }
 }
 #endif

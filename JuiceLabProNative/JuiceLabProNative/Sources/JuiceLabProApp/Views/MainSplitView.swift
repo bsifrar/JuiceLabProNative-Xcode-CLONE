@@ -156,6 +156,13 @@ private struct DropAndStatsView: View {
                     value: vm.progress.totalBytes == 0 ? 0 : Double(vm.progress.bytesScanned),
                     total: Double(max(vm.progress.totalBytes, 1))
                 )
+                if !vm.statusMessage.isEmpty {
+                    Text(vm.statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(vm.statusMessage.localizedCaseInsensitiveContains("warning") ||
+                                         vm.statusMessage.localizedCaseInsensitiveContains("unreadable") ? .orange : .secondary)
+                        .lineLimit(3)
+                }
             }
             .frame(width: 260)
             .cardSurface()
@@ -201,6 +208,7 @@ private struct ResultsTableView: View {
 }
 
 private struct InspectorView: View {
+    @EnvironmentObject private var vm: AppViewModel
     let item: FoundItem?
 
     var body: some View {
@@ -218,7 +226,7 @@ private struct InspectorView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 GroupBox("Preview") {
-                    PreviewView(item: item)
+                    PreviewView(item: item, runOutputRoot: vm.activeRun?.outputRoot)
                         .frame(maxWidth: .infinity, minHeight: 180, maxHeight: 320)
                         .background(Color.gray.opacity(0.08))
                         .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -252,6 +260,7 @@ private struct InspectorView: View {
 
 private struct PreviewView: View {
     let item: FoundItem
+    let runOutputRoot: String?
 
     @State private var nsImage: NSImage?
     @State private var previewText: String = ""
@@ -288,73 +297,129 @@ private struct PreviewView: View {
             self.avPlayer = nil
         }
 
-        let path = item.outputPath ?? item.sourcePath
-        let url = URL(fileURLWithPath: path)
-        guard FileManager.default.fileExists(atPath: path) else {
-            await MainActor.run { self.previewText = "File not found" }
+        let candidates = previewCandidatePaths()
+        var loaded: (URL, Data)?
+        var lastError: Error?
+
+        for candidate in candidates {
+            let url = URL(fileURLWithPath: candidate)
+            guard FileManager.default.fileExists(atPath: candidate) else { continue }
+
+            #if canImport(AppKit)
+            let scoped = url.startAccessingSecurityScopedResource()
+            #endif
+
+            do {
+                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                #if canImport(AppKit)
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                #endif
+                loaded = (url, data)
+                break
+            } catch {
+                #if canImport(AppKit)
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                #endif
+                lastError = error
+            }
+        }
+
+        guard let (url, data) = loaded else {
+            if let lastError {
+                let message = "Preview failed: \(lastError.localizedDescription). Use Reveal in Finder to open exported artifacts."
+                await MainActor.run { self.previewText = message }
+            } else {
+                await MainActor.run { self.previewText = "File not found in source or exported output." }
+            }
             return
         }
-        #if canImport(AppKit)
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer {
-            if scoped { url.stopAccessingSecurityScopedResource() }
+
+        // Priority: PDF, AV (video/audio), Image, Text, Hex
+        let ext = url.pathExtension.lowercased()
+        if ext == "pdf", let doc = PDFDocument(data: data) {
+            await MainActor.run { self.pdfDocument = doc }
+            return
         }
-        #endif
-        do {
-            let data = try Data(contentsOf: url, options: .mappedIfSafe)
 
-            // Priority: PDF, AV (video/audio), Image, Text, Hex
-            let ext = url.pathExtension.lowercased()
-            if ext == "pdf", let doc = PDFDocument(data: data) {
-                await MainActor.run { self.pdfDocument = doc }
-                return
-            }
-
-            let videoExts: Set<String> = ["mp4", "mov", "mkv", "avi", "webm", "mpeg", "m2ts"]
-            let audioExts: Set<String> = ["mp3", "wav", "flac", "ogg", "m4a", "aac", "alac"]
-            if videoExts.contains(ext) || audioExts.contains(ext) {
-                let player = AVPlayer(url: url)
-                await MainActor.run { self.avPlayer = player }
-                return
-            }
-
-            if item.category == .images, let img = NSImage(data: data) {
-                let maxSide: CGFloat = 512
-                let size = img.size
-                let scale = min(maxSide / max(size.width, size.height), 1)
-                let target = NSSize(width: size.width * scale, height: size.height * scale)
-                let thumb = NSImage(size: target)
-                thumb.lockFocus()
-                img.draw(in: NSRect(origin: .zero, size: target), from: NSRect(origin: .zero, size: size), operation: .copy, fraction: 1.0)
-                thumb.unlockFocus()
-                await MainActor.run { self.nsImage = thumb }
-                return
-            }
-
-            let textExts: Set<String> = ["txt", "csv", "json", "xml", "html", "md"]
-            if textExts.contains(ext) {
-                if let s = String(data: data.prefix(32_768), encoding: .utf8) ?? String(data: data.prefix(32_768), encoding: .ascii) {
-                    await MainActor.run { self.previewText = s }
-                    return
-                }
-            }
-
-            // Fallback: hex dump of the first up to 4KB
-            let sample = data.prefix(4096)
-            var lines: [String] = []
-            var offset = 0
-            let bytes = Array(sample)
-            while offset < bytes.count {
-                let chunk = bytes[offset..<min(offset+16, bytes.count)]
-                let hex = chunk.map { String(format: "%02X", $0) }.joined(separator: " ")
-                lines.append(String(format: "%08X  %@", offset, hex))
-                offset += 16
-            }
-            await MainActor.run { self.previewText = lines.joined(separator: "\n") }
-        } catch {
-            let message = "Preview failed: \(error.localizedDescription). If this is a source file, try exporting the item first and previewing the exported file."
-            await MainActor.run { self.previewText = message }
+        let videoExts: Set<String> = ["mp4", "mov", "mkv", "avi", "webm", "mpeg", "m2ts"]
+        let audioExts: Set<String> = ["mp3", "wav", "flac", "ogg", "m4a", "aac", "alac"]
+        if videoExts.contains(ext) || audioExts.contains(ext) {
+            let player = AVPlayer(url: url)
+            await MainActor.run { self.avPlayer = player }
+            return
         }
+
+        if item.category == .images, let img = NSImage(data: data) {
+            let maxSide: CGFloat = 512
+            let size = img.size
+            let scale = min(maxSide / max(size.width, size.height), 1)
+            let target = NSSize(width: size.width * scale, height: size.height * scale)
+            let thumb = NSImage(size: target)
+            thumb.lockFocus()
+            img.draw(in: NSRect(origin: .zero, size: target), from: NSRect(origin: .zero, size: size), operation: .copy, fraction: 1.0)
+            thumb.unlockFocus()
+            await MainActor.run { self.nsImage = thumb }
+            return
+        }
+
+        let textExts: Set<String> = ["txt", "csv", "json", "xml", "html", "md"]
+        if textExts.contains(ext) {
+            if let s = String(data: data.prefix(32_768), encoding: .utf8) ?? String(data: data.prefix(32_768), encoding: .ascii) {
+                await MainActor.run { self.previewText = s }
+                return
+            }
+        }
+
+        // Fallback: hex dump of the first up to 4KB
+        let sample = data.prefix(4096)
+        var lines: [String] = []
+        var offset = 0
+        let bytes = Array(sample)
+        while offset < bytes.count {
+            let chunk = bytes[offset..<min(offset+16, bytes.count)]
+            let hex = chunk.map { String(format: "%02X", $0) }.joined(separator: " ")
+            lines.append(String(format: "%08X  %@", offset, hex))
+            offset += 16
+        }
+        await MainActor.run { self.previewText = lines.joined(separator: "\n") }
+    }
+
+    private func previewCandidatePaths() -> [String] {
+        var candidates: [String] = []
+        if let output = item.outputPath { candidates.append(output) }
+        candidates.append(item.sourcePath)
+
+        if let runOutputRoot,
+           let fallback = findByBasename(root: runOutputRoot, name: URL(fileURLWithPath: item.sourcePath).lastPathComponent) {
+            candidates.append(fallback)
+        }
+        var seen = Set<String>()
+        var deduped: [String] = []
+        for path in candidates where !seen.contains(path) {
+            seen.insert(path)
+            deduped.append(path)
+        }
+        return deduped
+    }
+
+    private func findByBasename(root: String, name: String) -> String? {
+        let rootURL = URL(fileURLWithPath: root, isDirectory: true)
+        guard let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        var scanned = 0
+        while let next = enumerator.nextObject() as? URL {
+            scanned += 1
+            if scanned > 5000 { return nil }
+            if next.lastPathComponent == name,
+               (try? next.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                return next.path
+            }
+        }
+        return nil
     }
 }
 
