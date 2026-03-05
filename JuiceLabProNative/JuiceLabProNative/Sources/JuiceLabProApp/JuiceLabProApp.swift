@@ -4,6 +4,14 @@ import SwiftUI
 struct JuiceLabProApp: App {
     @StateObject private var viewModel = AppViewModel()
 
+    init() {
+        if let url = Bundle.main.url(forResource: "NSFWDetector", withExtension: "mlmodelc") {
+            print("✅ NSFWDetector model found at:", url.path)
+        } else {
+            print("❌ NSFWDetector model NOT found in bundle")
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             MainSplitView()

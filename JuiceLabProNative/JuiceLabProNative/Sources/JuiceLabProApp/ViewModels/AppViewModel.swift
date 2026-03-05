@@ -14,7 +14,7 @@ final class AppViewModel: ObservableObject {
     }
 
     @Published var route: Route? = .results
-    @Published var settings = ScanSettings()
+    @Published var settings = ScanSettings(enableAI: false)
     @Published var runs: [ScanRun] = []
     @Published var selectedRunID: UUID?
     @Published var selectedItem: FoundItem?
@@ -24,8 +24,18 @@ final class AppViewModel: ObservableObject {
     @Published var isScanning = false
     @Published var droppedURLs: [URL] = []
 
+    /// UI refresh signal (throttled)
+    @Published private(set) var itemTick: Int = 0
+
     private let engine = ScannerEngine()
     private let history = RunHistoryStore()
+
+    /// ✅ cancellation handle
+    private var scanTask: Task<Void, Never>?
+
+    /// ✅ throttle state
+    private var lastTickTime: CFAbsoluteTime = 0
+    private var pendingTick: Bool = false
 
     init() {
         Task { runs = await history.load() }
@@ -40,9 +50,12 @@ final class AppViewModel: ObservableObject {
 
     var filteredItems: [FoundItem] {
         guard let run = activeRun else { return [] }
+        _ = itemTick // drive reevaluation
         return run.items.filter { item in
             selectedCategories.contains(item.category) &&
-            (query.isEmpty || item.sourcePath.localizedCaseInsensitiveContains(query) || item.detectedType.localizedCaseInsensitiveContains(query))
+            (query.isEmpty ||
+             item.sourcePath.localizedCaseInsensitiveContains(query) ||
+             item.detectedType.localizedCaseInsensitiveContains(query))
         }
     }
 
@@ -60,7 +73,9 @@ final class AppViewModel: ObservableObject {
         guard !droppedURLs.isEmpty, !isScanning else { return }
         isScanning = true
 
-        Task { @MainActor in
+        scanTask?.cancel()
+
+        scanTask = Task { @MainActor in
             let scopedRoots = droppedURLs.map { url in
                 (url, url.startAccessingSecurityScopedResource())
             }
@@ -80,14 +95,26 @@ final class AppViewModel: ObservableObject {
                 },
                 onItem: { _ in
                     Task { @MainActor in
-                        self.objectWillChange.send()
+                        self.throttledTick()
                     }
                 }
             )
 
-            var doneRun = run
-            if let exported = try? await engine.export(items: run.items, runName: run.name, settings: settings) {
-                doneRun.items = exported
+            if Task.isCancelled {
+                self.isScanning = false
+                return
+            }
+
+            let doneRun: ScanRun
+            do {
+                doneRun = try await engine.export(run: run)
+            } catch {
+                doneRun = run
+            }
+
+            if Task.isCancelled {
+                self.isScanning = false
+                return
             }
 
             runs.insert(doneRun, at: 0)
@@ -98,9 +125,30 @@ final class AppViewModel: ObservableObject {
     }
 
     func stopScan() {
-        // Placeholder until ScannerEngine cancellation is wired.
+        scanTask?.cancel()
+        scanTask = nil
         isScanning = false
+    }
+
+    /// ✅ throttles UI refresh to ~10Hz to prevent churn on huge scans
+    private func throttledTick() {
+        let now = CFAbsoluteTimeGetCurrent()
+        let minInterval: CFAbsoluteTime = 0.10 // 10 Hz
+
+        if now - lastTickTime >= minInterval {
+            lastTickTime = now
+            itemTick &+= 1
+            pendingTick = false
+        } else if !pendingTick {
+            pendingTick = true
+            let delay = minInterval - (now - lastTickTime)
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(max(delay, 0) * 1_000_000_000))
+                self.lastTickTime = CFAbsoluteTimeGetCurrent()
+                self.itemTick &+= 1
+                self.pendingTick = false
+            }
+        }
     }
 }
 #endif
-

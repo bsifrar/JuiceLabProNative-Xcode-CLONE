@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		883ECE592F4FC96900528FA9 /* JuiceLabCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 883ECE512F4FC96900528FA9 /* JuiceLabCore.framework */; };
 		883ECE5A2F4FC96900528FA9 /* JuiceLabCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 883ECE512F4FC96900528FA9 /* JuiceLabCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		887DDD152F52CA8000D1EFDF /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 887DDD142F52CA8000D1EFDF /* ZIPFoundation */; };
+		887DDD172F52CA9A00D1EFDF /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 887DDD162F52CA9A00D1EFDF /* ZIPFoundation */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -47,6 +49,15 @@
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		88D9CC642F5239ED005BF2DA /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Engine;
+			dstSubfolderSpec = 7;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -60,6 +71,9 @@
 		883ECE692F4FCBED00528FA9 /* Exceptions for "JuiceLabProNative" folder in "JuiceLabProNative" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				Engine/juicesuite_engine.py,
+				JuiceLabProNativeTests/JuiceLabProNativeTests.swift,
+				Sources/JuiceLabCore/Engine/AI/AIEngine.swift,
 				Sources/JuiceLabCore/Engine/ScannerEngine.swift,
 				Sources/JuiceLabCore/Engine/SignatureRegistry.swift,
 				Sources/JuiceLabCore/Models/ScanModels.swift,
@@ -71,6 +85,7 @@
 		883ECE6C2F4FCD2600528FA9 /* Exceptions for "JuiceLabProNative" folder in "JuiceLabProNativeTests" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				JuiceLabProNativeTests/JuiceLabProNativeTests.swift,
 				Tests/JuiceLabCoreTests/SignatureDetectionTests.swift,
 			);
 			target = 8897DCE92F4F98EE00249605 /* JuiceLabProNativeTests */;
@@ -85,6 +100,7 @@
 		883ECE732F4FD01000528FA9 /* Exceptions for "JuiceLabProNative" folder in "JuiceLabCore" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				Sources/JuiceLabCore/Engine/AI/AIEngine.swift,
 				Sources/JuiceLabCore/Engine/ScannerEngine.swift,
 				Sources/JuiceLabCore/Engine/SignatureRegistry.swift,
 				Sources/JuiceLabCore/Models/ScanModels.swift,
@@ -93,6 +109,16 @@
 			target = 883ECE502F4FC96900528FA9 /* JuiceLabCore */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		88D9CC662F5239FC005BF2DA /* Exceptions for "JuiceLabProNative" folder in "Copy Files" phase from "JuiceLabProNative" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = 88D9CC642F5239ED005BF2DA /* CopyFiles */;
+			membershipExceptions = (
+				Engine/juicesuite_engine.py,
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		883ECE522F4FC96900528FA9 /* JuiceLabCore */ = {
@@ -107,15 +133,11 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				883ECE692F4FCBED00528FA9 /* Exceptions for "JuiceLabProNative" folder in "JuiceLabProNative" target */,
+				88D9CC662F5239FC005BF2DA /* Exceptions for "JuiceLabProNative" folder in "Copy Files" phase from "JuiceLabProNative" target */,
 				883ECE6C2F4FCD2600528FA9 /* Exceptions for "JuiceLabProNative" folder in "JuiceLabProNativeTests" target */,
 				883ECE732F4FD01000528FA9 /* Exceptions for "JuiceLabProNative" folder in "JuiceLabCore" target */,
 			);
 			path = JuiceLabProNative;
-			sourceTree = "<group>";
-		};
-		8897DCED2F4F98EE00249605 /* JuiceLabProNativeTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = JuiceLabProNativeTests;
 			sourceTree = "<group>";
 		};
 		8897DCF72F4F98EE00249605 /* JuiceLabProNativeUITests */ = {
@@ -130,6 +152,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				887DDD152F52CA8000D1EFDF /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -138,6 +161,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				883ECE592F4FC96900528FA9 /* JuiceLabCore.framework in Frameworks */,
+				887DDD172F52CA9A00D1EFDF /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -161,8 +185,8 @@
 		8897DCD42F4F98ED00249605 = {
 			isa = PBXGroup;
 			children = (
+				88D9CC462F520C19005BF2DA /* Resources */,
 				8897DCDF2F4F98ED00249605 /* JuiceLabProNative */,
-				8897DCED2F4F98EE00249605 /* JuiceLabProNativeTests */,
 				8897DCF72F4F98EE00249605 /* JuiceLabProNativeUITests */,
 				883ECE522F4FC96900528FA9 /* JuiceLabCore */,
 				8897DCDE2F4F98ED00249605 /* Products */,
@@ -178,6 +202,13 @@
 				883ECE512F4FC96900528FA9 /* JuiceLabCore.framework */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		88D9CC462F520C19005BF2DA /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Resources;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -211,6 +242,7 @@
 			);
 			name = JuiceLabCore;
 			packageProductDependencies = (
+				887DDD142F52CA8000D1EFDF /* ZIPFoundation */,
 			);
 			productName = JuiceLabCore;
 			productReference = 883ECE512F4FC96900528FA9 /* JuiceLabCore.framework */;
@@ -222,8 +254,9 @@
 			buildPhases = (
 				8897DCD92F4F98ED00249605 /* Sources */,
 				8897DCDA2F4F98ED00249605 /* Frameworks */,
-				8897DCDB2F4F98ED00249605 /* Resources */,
 				883ECE5B2F4FC96900528FA9 /* Embed Frameworks */,
+				8897DCDB2F4F98ED00249605 /* Resources */,
+				88D9CC642F5239ED005BF2DA /* CopyFiles */,
 			);
 			buildRules = (
 			);
@@ -235,6 +268,7 @@
 			);
 			name = JuiceLabProNative;
 			packageProductDependencies = (
+				887DDD162F52CA9A00D1EFDF /* ZIPFoundation */,
 			);
 			productName = JuiceLabProNative;
 			productReference = 8897DCDD2F4F98ED00249605 /* JuiceLabProNative.app */;
@@ -252,9 +286,6 @@
 			);
 			dependencies = (
 				8897DCEC2F4F98EE00249605 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				8897DCED2F4F98EE00249605 /* JuiceLabProNativeTests */,
 			);
 			name = JuiceLabProNativeTests;
 			packageProductDependencies = (
@@ -321,6 +352,9 @@
 			);
 			mainGroup = 8897DCD42F4F98ED00249605;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				887DDD132F52CA8000D1EFDF /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8897DCDE2F4F98ED00249605 /* Products */;
 			projectDirPath = "";
@@ -418,7 +452,7 @@
 		883ECE5C2F4FC96900528FA9 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUILD_LIBRARY_FOR_DISTRIBUTION = YES;
+				BUILD_LIBRARY_FOR_DISTRIBUTION = NO;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -456,7 +490,7 @@
 		883ECE5D2F4FC96900528FA9 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUILD_LIBRARY_FOR_DISTRIBUTION = YES;
+				BUILD_LIBRARY_FOR_DISTRIBUTION = NO;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -625,6 +659,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "JuiceLabProNative (Engine Test)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -632,7 +667,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = Pantronic.JuiceLabProNative;
+				PRODUCT_BUNDLE_IDENTIFIER = com.bsifrar.JuiceLabProNative.EngineWrapper;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -658,6 +693,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "JuiceLabProNative (Engine Test)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -665,7 +701,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = Pantronic.JuiceLabProNative;
+				PRODUCT_BUNDLE_IDENTIFIER = com.bsifrar.JuiceLabProNative.EngineWrapper;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -806,6 +842,30 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		887DDD132F52CA8000D1EFDF /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.20;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		887DDD142F52CA8000D1EFDF /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 887DDD132F52CA8000D1EFDF /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+		887DDD162F52CA9A00D1EFDF /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 887DDD132F52CA8000D1EFDF /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 8897DCD52F4F98ED00249605 /* Project object */;
 }

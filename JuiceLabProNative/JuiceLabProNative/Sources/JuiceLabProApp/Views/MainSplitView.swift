@@ -93,6 +93,16 @@ private struct ToolbarView: View {
 
             Button("Stop") { vm.stopScan() }
                 .disabled(!vm.isScanning)
+            
+            Button("Reveal Run Folder") {
+                if let run = vm.activeRun {
+                    let url = URL(fileURLWithPath: run.outputRoot)
+                    NSWorkspace.shared.open(url)
+                } else {
+                    let url = URL(fileURLWithPath: vm.settings.outputFolder)
+                    NSWorkspace.shared.open(url)
+                }
+            }
         }
         .cardSurface()
     }
@@ -222,6 +232,12 @@ private struct InspectorView: View {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(item.outputPath ?? item.sourcePath, forType: .string)
                         }
+                        Button("Open") {
+                            let path = item.outputPath ?? item.sourcePath
+                            if FileManager.default.fileExists(atPath: path) {
+                                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                            }
+                        }
                     }
                 }
             } else {
@@ -296,7 +312,15 @@ private struct PreviewView: View {
             }
 
             if item.category == .images, let img = NSImage(data: data) {
-                await MainActor.run { self.nsImage = img }
+                let maxSide: CGFloat = 512
+                let size = img.size
+                let scale = min(maxSide / max(size.width, size.height), 1)
+                let target = NSSize(width: size.width * scale, height: size.height * scale)
+                let thumb = NSImage(size: target)
+                thumb.lockFocus()
+                img.draw(in: NSRect(origin: .zero, size: target), from: NSRect(origin: .zero, size: size), operation: .copy, fraction: 1.0)
+                thumb.unlockFocus()
+                await MainActor.run { self.nsImage = thumb }
                 return
             }
 

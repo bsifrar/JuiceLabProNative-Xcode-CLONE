@@ -1,5 +1,11 @@
 import Foundation
 
+#if canImport(CryptoKit)
+import CryptoKit
+#endif
+
+// MARK: - Categories / Modes
+
 public enum FileCategory: String, Codable, CaseIterable, Sendable {
     case images, video, audio, text, archives, uncertain
 }
@@ -18,6 +24,14 @@ public enum PerformanceMode: String, Codable, CaseIterable, Sendable {
         case .thorough: return 1
         }
     }
+
+    public var batchSize: Int {
+        switch self {
+        case .fast: return 64
+        case .balanced: return 32
+        case .thorough: return 16
+        }
+    }
 }
 
 public enum DedupeMode: String, Codable, CaseIterable, Sendable {
@@ -27,6 +41,8 @@ public enum DedupeMode: String, Codable, CaseIterable, Sendable {
 public enum OrganizationScheme: String, Codable, CaseIterable, Sendable {
     case bySource, byType, flat
 }
+
+// MARK: - Items / Progress
 
 public struct FoundItem: Identifiable, Codable, Hashable, Sendable {
     public let id: UUID
@@ -87,17 +103,127 @@ public struct ScanProgress: Codable, Sendable {
     }
 }
 
+// MARK: - AI Models
+
+public enum NSFWSeverity: String, Codable, CaseIterable, Sendable {
+    case none
+    case suggestive
+    case explicit
+    case unknown
+}
+
+/// Stable “why flagged” reasons for UI + exports.
+public enum NSFWReason: String, Codable, CaseIterable, Sendable {
+    case exposedBreast
+    case exposedGenitals
+    case lingerie
+    case sexAct
+    case nudity
+    case buttocks
+    case other
+}
+
+/// Normalized rectangle (0–1 space).
+public struct NormalizedRect: Codable, Hashable, Sendable {
+    public var x: Double
+    public var y: Double
+    public var w: Double
+    public var h: Double
+
+    public init(x: Double, y: Double, w: Double, h: Double) {
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
+    }
+}
+
+public struct ReasonDetection: Codable, Hashable, Sendable {
+    public var reason: NSFWReason
+    public var confidence: Double
+    public var bbox: NormalizedRect?
+    public var modelLabel: String
+    public var notes: String?
+
+    public init(
+        reason: NSFWReason,
+        confidence: Double,
+        bbox: NormalizedRect? = nil,
+        modelLabel: String,
+        notes: String? = nil
+    ) {
+        self.reason = reason
+        self.confidence = confidence
+        self.bbox = bbox
+        self.modelLabel = modelLabel
+        self.notes = notes
+    }
+}
+
+public enum AIComputePreference: String, Codable, CaseIterable, Sendable {
+    case systemDefault
+    case cpuOnly
+    case all // best-effort GPU/ANE/etc.
+}
+
+// MARK: - Analyzer Results / Forensics
+
 public struct AnalyzerResult: Codable, Sendable {
     public var sourcePath: String
+
+    // legacy-ish forensic fields (still useful)
     public var stringsPath: String?
     public var carvedMediaCount: Int
     public var sqliteHeaderDetected: Bool
 
-    public init(sourcePath: String, stringsPath: String? = nil, carvedMediaCount: Int = 0, sqliteHeaderDetected: Bool = false) {
+    // AI fields
+    public var scaIsSensitive: Bool?
+    public var nsfwSeverity: NSFWSeverity
+    public var nsfwScore: Double
+    public var reasonDetections: [ReasonDetection]?
+
+    // reproducibility stamps
+    public var aiModelName: String?
+    public var aiModelHash: String?
+    public var aiEngineVersion: String?
+    public var aiSettingsFingerprint: String?
+    public var scoringVersion: Int
+
+    public init(
+        sourcePath: String,
+        stringsPath: String? = nil,
+        carvedMediaCount: Int = 0,
+        sqliteHeaderDetected: Bool = false
+    ) {
         self.sourcePath = sourcePath
         self.stringsPath = stringsPath
         self.carvedMediaCount = carvedMediaCount
         self.sqliteHeaderDetected = sqliteHeaderDetected
+
+        self.scaIsSensitive = nil
+        self.nsfwSeverity = .unknown
+        self.nsfwScore = 0
+        self.reasonDetections = nil
+
+        self.aiModelName = nil
+        self.aiModelHash = nil
+        self.aiEngineVersion = nil
+        self.aiSettingsFingerprint = nil
+        self.scoringVersion = 1
+    }
+}
+
+public struct StageTiming: Codable, Sendable {
+    public var stage: String
+    public var files: Int
+    public var totalMS: Int
+    public var avgMS: Int
+
+    public init(stage: String, files: Int, totalMS: Int, avgMS: Int) {
+        self.stage = stage
+        self.files = files
+        self.totalMS = totalMS
+        self.avgMS = avgMS
     }
 }
 
@@ -107,49 +233,21 @@ public struct ForensicSummary: Codable, Sendable {
     public var possibleDecryptableDBs: Int = 0
     public var keyFiles: [String] = []
     public var nestedArchives: Int = 0
+
     public var analyzerResults: [AnalyzerResult] = []
+    public var stageTimings: [StageTiming] = []
 
     public init() {}
 }
 
-public struct ScanRun: Identifiable, Codable, Sendable {
-    public let id: UUID
-    public let startedAt: Date
-    public var completedAt: Date?
-    public var name: String
-    public var sourceRoots: [String]
-    public var outputRoot: String
-    public var items: [FoundItem]
-    public var warnings: [String]
-    public var mode: PerformanceMode
-    public var forensic: ForensicSummary
-
-    public init(
-        id: UUID = UUID(),
-        startedAt: Date = .now,
-        completedAt: Date? = nil,
-        name: String,
-        sourceRoots: [String],
-        outputRoot: String,
-        items: [FoundItem] = [],
-        warnings: [String] = [],
-        mode: PerformanceMode = .balanced,
-        forensic: ForensicSummary = ForensicSummary()
-    ) {
-        self.id = id
-        self.startedAt = startedAt
-        self.completedAt = completedAt
-        self.name = name
-        self.sourceRoots = sourceRoots
-        self.outputRoot = outputRoot
-        self.items = items
-        self.warnings = warnings
-        self.mode = mode
-        self.forensic = forensic
-    }
-}
+// MARK: - Settings / Run
 
 public struct ScanSettings: Codable, Sendable {
+    // versioning for reproducibility
+    public var schemaVersion: Int
+    public var engineVersion: String
+
+    // core behavior
     public var outputFolder: String
     public var organizationScheme: OrganizationScheme
     public var dedupeMode: DedupeMode
@@ -157,11 +255,24 @@ public struct ScanSettings: Codable, Sendable {
     public var maxFileSizeMB: Int?
     public var performanceMode: PerformanceMode
     public var enabledTypes: Set<String>
-    public var enablePythonAnalyzers: Bool
-    public var pythonPath: String
-    public var scriptsFolder: String
+
+    // deterministic AI switch (per-run)
+    public var enableAI: Bool
+
+    // app-bundle model name (expects <name>.mlmodel or <name>.mlpackage in Copy Bundle Resources)
+    public var aiModelName: String
+
+    // compute preference
+    public var aiComputePreference: AIComputePreference
+
+    // embedding-based semantic search
+    public var enableEmbeddings: Bool
+    public var embeddingModelID: String
+    public var exportEmbeddingsSnapshot: Bool
 
     public init(
+        schemaVersion: Int = 1,
+        engineVersion: String = "1.0.0",
         outputFolder: String = {
             let downloadsURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             let downloadsPath = downloadsURL?.path ?? (NSHomeDirectory() + "/Downloads")
@@ -180,10 +291,15 @@ public struct ScanSettings: Codable, Sendable {
             "mp4", "mov", "avi", "mkv", "mpeg", "m2ts", "webm",
             "tiff", "tif", "bmp", "ico", "psd", "dds", "heic", "heif", "heifs", "heics"
         ],
-        enablePythonAnalyzers: Bool = false,
-        pythonPath: String = "/usr/bin/python3",
-        scriptsFolder: String = NSHomeDirectory() + "/BlackBerryTools"
+        enableAI: Bool = false,
+        aiModelName: String = "NSFWReasons",
+        aiComputePreference: AIComputePreference = .systemDefault,
+        enableEmbeddings: Bool = true,
+        embeddingModelID: String = "apple_nlembedding_sentence_en",
+        exportEmbeddingsSnapshot: Bool = false
     ) {
+        self.schemaVersion = schemaVersion
+        self.engineVersion = engineVersion
         self.outputFolder = outputFolder
         self.organizationScheme = organizationScheme
         self.dedupeMode = dedupeMode
@@ -191,9 +307,96 @@ public struct ScanSettings: Codable, Sendable {
         self.maxFileSizeMB = maxFileSizeMB
         self.performanceMode = performanceMode
         self.enabledTypes = enabledTypes
-        self.enablePythonAnalyzers = enablePythonAnalyzers
-        self.pythonPath = pythonPath
-        self.scriptsFolder = scriptsFolder
+        self.enableAI = enableAI
+        self.aiModelName = aiModelName
+        self.aiComputePreference = aiComputePreference
+
+        self.enableEmbeddings = enableEmbeddings
+        self.embeddingModelID = embeddingModelID
+        self.exportEmbeddingsSnapshot = exportEmbeddingsSnapshot
     }
 }
 
+public struct ScanRun: Identifiable, Codable, Sendable {
+    public let id: UUID
+    public let startedAt: Date
+    public var completedAt: Date?
+
+    public var name: String
+    public var sourceRoots: [String]
+
+    public var settings: ScanSettings
+    public var settingsFingerprint: String
+
+    public var outputRoot: String
+
+    public var items: [FoundItem]
+    public var warnings: [String]
+    public var mode: PerformanceMode
+    public var forensic: ForensicSummary
+
+    public init(
+        id: UUID = UUID(),
+        startedAt: Date = .now,
+        completedAt: Date? = nil,
+        name: String,
+        sourceRoots: [String],
+        settings: ScanSettings,
+        settingsFingerprint: String,
+        outputRoot: String,
+        items: [FoundItem] = [],
+        warnings: [String] = [],
+        mode: PerformanceMode = .balanced,
+        forensic: ForensicSummary = ForensicSummary()
+    ) {
+        self.id = id
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+        self.name = name
+        self.sourceRoots = sourceRoots
+        self.settings = settings
+        self.settingsFingerprint = settingsFingerprint
+        self.outputRoot = outputRoot
+        self.items = items
+        self.warnings = warnings
+        self.mode = mode
+        self.forensic = forensic
+    }
+}
+
+// MARK: - Fingerprinting + Stable encoding
+
+public extension ScanSettings {
+    func fingerprint() -> String {
+        do {
+            let data = try JSONEncoder.stable.encode(self)
+            return Hashing.hexSHA256(data)
+        } catch {
+            return "fingerprint_error"
+        }
+    }
+}
+
+public extension JSONEncoder {
+    static var stable: JSONEncoder {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.sortedKeys]
+        enc.dateEncodingStrategy = .iso8601
+        return enc
+    }
+}
+
+private enum Hashing {
+    static func hexSHA256(_ data: Data) -> String {
+        #if canImport(CryptoKit)
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+        #else
+        // stable fallback (non-crypto)
+        return String(data.reduce(into: UInt64(1469598103934665603)) { h, b in
+            h ^= UInt64(b)
+            h &*= 1099511628211
+        })
+        #endif
+    }
+}
