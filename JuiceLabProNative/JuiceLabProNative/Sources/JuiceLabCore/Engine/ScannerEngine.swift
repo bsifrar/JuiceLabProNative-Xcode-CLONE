@@ -12,6 +12,10 @@ import CoreGraphics
 import ImageIO
 #endif
 
+#if canImport(PDFKit)
+import PDFKit
+#endif
+
 #if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
 #endif
@@ -281,6 +285,7 @@ public actor ScannerEngine {
         // 1) Copy files
         let exportedItems = exportItems(run: run, to: runRoot)
         updated.items = exportedItems
+        _ = generatePDFTextArtifacts(for: &updated, at: runRoot)
         _ = try generateHeatmaps(for: &updated, at: runRoot)
 
         // 2) Core artifacts
@@ -988,6 +993,71 @@ public actor ScannerEngine {
             }
         }
         return count
+    }
+
+    private func generatePDFTextArtifacts(for run: inout ScanRun, at runRoot: URL) -> Int {
+        let textDir = runRoot.appendingPathComponent("pdf_text", isDirectory: true)
+        try? FileManager.default.createDirectory(at: textDir, withIntermediateDirectories: true)
+
+        let pdfItems = run.items.filter { item in
+            let ext = item.fileExtension.lowercased()
+            if ext == "pdf" || item.detectedType.lowercased() == "pdf" {
+                return true
+            }
+            return URL(fileURLWithPath: item.sourcePath).pathExtension.lowercased() == "pdf"
+        }
+
+        guard !pdfItems.isEmpty else { return 0 }
+
+        var sourceToAnalyzerIndex: [String: Int] = [:]
+        for (idx, ar) in run.forensic.analyzerResults.enumerated() {
+            sourceToAnalyzerIndex[ar.sourcePath] = idx
+        }
+
+        var created = 0
+        for item in pdfItems {
+            let sourcePath = item.outputPath ?? item.sourcePath
+            guard let text = extractPDFText(from: sourcePath), !text.isEmpty else { continue }
+
+            let stem = sanitizedFileStem(sourcePath)
+            var dst = textDir.appendingPathComponent("\(stem).txt")
+            if FileManager.default.fileExists(atPath: dst.path) {
+                dst = textDir.appendingPathComponent("\(stem)-\(item.id.uuidString.prefix(8)).txt")
+            }
+
+            do {
+                try text.write(to: dst, atomically: true, encoding: .utf8)
+                if let idx = sourceToAnalyzerIndex[item.sourcePath] {
+                    run.forensic.analyzerResults[idx].stringsPath = dst.path
+                } else {
+                    var ar = AnalyzerResult(sourcePath: item.sourcePath)
+                    ar.stringsPath = dst.path
+                    run.forensic.analyzerResults.append(ar)
+                    sourceToAnalyzerIndex[item.sourcePath] = run.forensic.analyzerResults.count - 1
+                }
+                created += 1
+            } catch {
+                continue
+            }
+        }
+        return created
+    }
+
+    private func extractPDFText(from path: String) -> String? {
+        #if canImport(PDFKit)
+        let url = URL(fileURLWithPath: path)
+        guard let doc = PDFDocument(url: url), let raw = doc.string else { return nil }
+        let collapsed = raw
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if collapsed.isEmpty { return nil }
+        // Keep artifacts manageable while preserving useful evidence text.
+        return String(collapsed.prefix(1_000_000))
+        #else
+        _ = path
+        return nil
+        #endif
     }
 
     private func renderHeatmap(sourcePath: String, detections: [ReasonDetection], destination: URL) -> Bool {
