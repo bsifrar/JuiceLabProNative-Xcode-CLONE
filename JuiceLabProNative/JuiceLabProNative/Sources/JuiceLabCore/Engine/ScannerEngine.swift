@@ -309,6 +309,9 @@ public actor ScannerEngine {
         _ = generatePlistArtifacts(for: &updated, at: runRoot)
         _ = generatePDFTextArtifacts(for: &updated, at: runRoot)
         _ = generateBinaryStringArtifacts(for: &updated, at: runRoot)
+        _ = generateURLArtifacts(for: &updated, at: runRoot)
+        _ = generateAllTextArtifact(for: &updated, at: runRoot)
+        _ = generateRunIndexHTML(for: updated, at: runRoot)
         _ = try generateHeatmaps(for: &updated, at: runRoot)
 
         // 2) Core artifacts
@@ -1420,6 +1423,250 @@ public actor ScannerEngine {
         }
 
         return created
+    }
+
+    private func generateURLArtifacts(for run: inout ScanRun, at runRoot: URL) -> Int {
+        let urlsDir = runRoot.appendingPathComponent("URLs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: urlsDir, withIntermediateDirectories: true)
+
+        var textCandidates = collectTextArtifactCandidates(run: run)
+        let textItems = run.items.filter { item in
+            let ext = item.fileExtension.lowercased()
+            return item.category == .text || ["txt", "md", "rtf", "csv", "json", "xml", "html", "htm", "log"].contains(ext)
+        }
+        for item in textItems {
+            let sourceURL = URL(fileURLWithPath: item.outputPath ?? item.sourcePath)
+            textCandidates.append(sourceURL)
+        }
+
+        let regex = try? NSRegularExpression(pattern: #"https?://[^\s"'<>()]+"#, options: [.caseInsensitive])
+        guard let regex else { return 0 }
+
+        var unique: Set<String> = []
+        var urls: [String] = []
+        let maxReads = 700
+        let maxBytesPerFile = 2 * 1_048_576
+        var reads = 0
+
+        for candidate in dedupeURLs(textCandidates) where reads < maxReads {
+            guard let s = readTextSample(from: candidate, maxBytes: maxBytesPerFile), !s.isEmpty else { continue }
+            reads += 1
+
+            let range = NSRange(s.startIndex..<s.endIndex, in: s)
+            regex.enumerateMatches(in: s, options: [], range: range) { match, _, _ in
+                guard let match, let r = Range(match.range, in: s) else { return }
+                let raw = String(s[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if raw.isEmpty || unique.contains(raw) { return }
+                unique.insert(raw)
+                urls.append(raw)
+            }
+        }
+
+        guard !urls.isEmpty else { return 0 }
+        urls.sort()
+
+        do {
+            try urls.joined(separator: "\n").write(
+                to: urlsDir.appendingPathComponent("URLs.txt"),
+                atomically: true,
+                encoding: .utf8
+            )
+        } catch {
+            return 0
+        }
+
+        let rows = urls.prefix(5000).map { u -> String in
+            let e = escapeHTML(u)
+            return "<li><a href=\"\(e)\">\(e)</a></li>"
+        }.joined(separator: "\n")
+
+        let html = """
+        <!doctype html>
+        <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Recovered URLs</title>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 24px; }
+            code { background:#f4f4f4; padding:2px 6px; border-radius:4px; }
+          </style>
+        </head>
+        <body>
+          <h1>Recovered URLs</h1>
+          <p>Total: <code>\(urls.count)</code></p>
+          <ol>
+          \(rows)
+          </ol>
+        </body>
+        </html>
+        """
+
+        try? html.write(to: urlsDir.appendingPathComponent("URLs.html"), atomically: true, encoding: .utf8)
+        return urls.count
+    }
+
+    private func generateAllTextArtifact(for run: inout ScanRun, at runRoot: URL) -> Int {
+        let txtDir = runRoot.appendingPathComponent("txt", isDirectory: true)
+        try? FileManager.default.createDirectory(at: txtDir, withIntermediateDirectories: true)
+
+        var sections: [String] = []
+        let maxBytesPerFile = 2 * 1_048_576
+        let maxFiles = 500
+        var consumed = 0
+
+        let textArtifacts = collectTextArtifactCandidates(run: run)
+        for fileURL in dedupeURLs(textArtifacts) where consumed < maxFiles {
+            guard let text = readTextSample(from: fileURL, maxBytes: maxBytesPerFile), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            sections.append("===== \(fileURL.lastPathComponent) =====\n\(text)")
+            consumed += 1
+        }
+
+        guard !sections.isEmpty else { return 0 }
+        let output = sections.joined(separator: "\n\n")
+        do {
+            try output.write(to: txtDir.appendingPathComponent("All The Text.txt"), atomically: true, encoding: .utf8)
+            return sections.count
+        } catch {
+            return 0
+        }
+    }
+
+    private func generateRunIndexHTML(for run: ScanRun, at runRoot: URL) -> Int {
+        let items = run.items
+        let byCategory = Dictionary(grouping: items, by: { $0.category })
+        let totalBytes = items.reduce(0) { $0 + $1.length }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+
+        func rows(for category: FileCategory) -> String {
+            let entries = (byCategory[category] ?? []).prefix(80)
+            return entries.map { item in
+                let displayName = URL(fileURLWithPath: item.outputPath ?? item.sourcePath).lastPathComponent
+                let relPath = relativeOutputPath(for: item.outputPath, root: runRoot)
+                let size = formatter.string(fromByteCount: Int64(item.length))
+                let validation = item.validationStatus.rawValue
+                if let relPath {
+                    return "<tr><td><a href=\"\(escapeHTML(relPath))\">\(escapeHTML(displayName))</a></td><td>\(escapeHTML(size))</td><td>\(escapeHTML(validation))</td></tr>"
+                }
+                return "<tr><td>\(escapeHTML(displayName))</td><td>\(escapeHTML(size))</td><td>\(escapeHTML(validation))</td></tr>"
+            }.joined(separator: "\n")
+        }
+
+        let categories: [FileCategory] = [.images, .video, .audio, .text, .archives, .uncertain]
+        let categoryCards = categories.map { cat in
+            let count = byCategory[cat]?.count ?? 0
+            return "<div class=\"card\"><h3>\(escapeHTML(cat.rawValue.capitalized))</h3><p>\(count) files</p></div>"
+        }.joined(separator: "\n")
+
+        let sectionTables = categories.map { cat in
+            """
+            <section>
+              <h2>\(escapeHTML(cat.rawValue.capitalized))</h2>
+              <table>
+                <thead><tr><th>File</th><th>Size</th><th>Status</th></tr></thead>
+                <tbody>
+                \(rows(for: cat))
+                </tbody>
+              </table>
+            </section>
+            """
+        }.joined(separator: "\n")
+
+        let rootPath = runRoot.path
+        let urlPath = "\(rootPath)/URLs/URLs.html"
+        let textPath = "\(rootPath)/txt/All The Text.txt"
+
+        let html = """
+        <!doctype html>
+        <html>
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width,initial-scale=1" />
+          <title>JuiceLab Run Report</title>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 20px; color: #111; background: #fafafa; }
+            h1, h2 { margin: 0 0 8px 0; }
+            .meta { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 12px 0 20px 0; }
+            .card { background: white; border: 1px solid #e5e5e5; border-radius: 8px; padding: 10px; }
+            .links a { margin-right: 10px; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 18px; background: white; }
+            th, td { text-align: left; border-bottom: 1px solid #eee; padding: 6px 8px; font-size: 12px; }
+            th { background: #f5f5f5; }
+          </style>
+        </head>
+        <body>
+          <h1>JuiceLab Run Report</h1>
+          <p>Output: <code>\(escapeHTML(rootPath))</code></p>
+          <p>Scanned items: <strong>\(items.count)</strong> | Total bytes: <strong>\(escapeHTML(formatter.string(fromByteCount: Int64(totalBytes))))</strong></p>
+          <div class="links">
+            <a href="URLs/URLs.html">Recovered URLs</a>
+            <a href="txt/All The Text.txt">All The Text</a>
+            <a href="run_forensic.json">Forensic JSON</a>
+            <a href="run_items.json">Items JSON</a>
+          </div>
+          <div class="meta">
+            \(categoryCards)
+          </div>
+          \(sectionTables)
+          <p>Additional artifacts: <code>\(escapeHTML(urlPath))</code> and <code>\(escapeHTML(textPath))</code></p>
+        </body>
+        </html>
+        """
+
+        do {
+            try html.write(to: runRoot.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+            return 1
+        } catch {
+            return 0
+        }
+    }
+
+    private func collectTextArtifactCandidates(run: ScanRun) -> [URL] {
+        var out: [URL] = []
+        for ar in run.forensic.analyzerResults {
+            if let p = ar.stringsPath, !p.isEmpty {
+                out.append(URL(fileURLWithPath: p))
+            }
+        }
+        return out
+    }
+
+    private func dedupeURLs(_ urls: [URL]) -> [URL] {
+        var seen: Set<String> = []
+        var out: [URL] = []
+        for u in urls {
+            let p = u.path
+            if seen.contains(p) { continue }
+            seen.insert(p)
+            out.append(u)
+        }
+        return out
+    }
+
+    private func readTextSample(from fileURL: URL, maxBytes: Int) -> String? {
+        guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe), !data.isEmpty else { return nil }
+        let sample = Data(data.prefix(maxBytes))
+        if let s = String(data: sample, encoding: .utf8) { return s }
+        if let s = String(data: sample, encoding: .ascii) { return s }
+        return String(decoding: sample, as: UTF8.self)
+    }
+
+    private func relativeOutputPath(for candidatePath: String?, root: URL) -> String? {
+        guard let candidatePath else { return nil }
+        let rootPath = root.path
+        guard candidatePath.hasPrefix(rootPath) else { return nil }
+        var rel = String(candidatePath.dropFirst(rootPath.count))
+        if rel.hasPrefix("/") { rel.removeFirst() }
+        return rel.isEmpty ? nil : rel
+    }
+
+    private func escapeHTML(_ text: String) -> String {
+        var out = text
+        out = out.replacingOccurrences(of: "&", with: "&amp;")
+        out = out.replacingOccurrences(of: "<", with: "&lt;")
+        out = out.replacingOccurrences(of: ">", with: "&gt;")
+        out = out.replacingOccurrences(of: "\"", with: "&quot;")
+        return out
     }
 
     private func upsertAnalyzerArtifact(
