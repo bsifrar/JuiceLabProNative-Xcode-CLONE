@@ -22,7 +22,11 @@ public final class EmbeddingEngine: @unchecked Sendable {
 
     public func embed(text: String, modelID: String) async -> [Float]? {
         #if canImport(NaturalLanguage)
-        guard let emb = loadEmbedding(modelID: modelID) else { return nil }
+        // NLEmbedding usage is serialized; concurrent calls can crash inside CoreNLP on some OS builds.
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let emb = loadEmbeddingLocked(modelID: modelID) else { return nil }
         guard let v = emb.vector(for: text) else { return nil }
         return v.map { Float($0) }
         #else
@@ -40,10 +44,7 @@ public final class EmbeddingEngine: @unchecked Sendable {
     }
 
     #if canImport(NaturalLanguage)
-    private func loadEmbedding(modelID: String) -> NLEmbedding? {
-        lock.lock()
-        defer { lock.unlock() }
-
+    private func loadEmbeddingLocked(modelID: String) -> NLEmbedding? {
         if cachedModelID == modelID, let e = cachedEmbedding {
             return e
         }
