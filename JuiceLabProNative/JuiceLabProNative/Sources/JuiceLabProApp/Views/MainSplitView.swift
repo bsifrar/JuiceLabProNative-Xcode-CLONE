@@ -167,6 +167,12 @@ private struct DropAndStatsView: View {
                 Text("Scanned: \(ByteCountFormatter.string(fromByteCount: vm.progress.bytesScanned, countStyle: .file))")
                 Text(String(format: "%.1f MB/s", vm.progress.mbPerSecond))
                 Text("ETA: \(Int(vm.progress.etaSeconds))s")
+                if !vm.stageMessage.isEmpty {
+                    Text(vm.stageMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
                 ProgressView(
                     value: vm.progress.totalBytes == 0 ? 0 : Double(vm.progress.bytesScanned),
                     total: Double(max(vm.progress.totalBytes, 1))

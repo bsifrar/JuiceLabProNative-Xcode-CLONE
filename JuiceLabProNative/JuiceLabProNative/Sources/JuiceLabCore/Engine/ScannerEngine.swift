@@ -35,6 +35,7 @@ import ZIPFoundation
 public actor ScannerEngine {
     public typealias ProgressHandler = @Sendable (ScanProgress) -> Void
     public typealias ItemHandler = @Sendable (FoundItem) -> Void
+    public typealias StageHandler = @Sendable (_ fileName: String, _ stageName: String) -> Void
 
     // MARK: - Pipeline Types
 
@@ -119,7 +120,8 @@ public actor ScannerEngine {
         paths: [URL],
         settings: ScanSettings,
         onProgress: ProgressHandler? = nil,
-        onItem: ItemHandler? = nil
+        onItem: ItemHandler? = nil,
+        onStage: StageHandler? = nil
     ) async -> ScanRun {
 
         let runName = "Run_\(Int(Date().timeIntervalSince1970))"
@@ -196,6 +198,7 @@ public actor ScannerEngine {
                         var combined = StageOutput()
                         for stage in stages {
                             if Task.isCancelled { break }
+                            onStage?(file.lastPathComponent, stage.name)
                             let t0 = DispatchTime.now()
                             let o = await stage.process(file: file, data: data, context: context)
                             let dt = Int((DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000)

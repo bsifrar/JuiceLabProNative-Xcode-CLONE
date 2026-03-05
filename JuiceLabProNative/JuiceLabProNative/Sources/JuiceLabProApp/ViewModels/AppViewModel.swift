@@ -26,6 +26,7 @@ final class AppViewModel: ObservableObject {
     @Published var isScanning = false
     @Published var droppedURLs: [URL] = []
     @Published var statusMessage: String = ""
+    @Published var stageMessage: String = ""
 
     /// UI refresh signal (throttled)
     @Published private(set) var itemTick: Int = 0
@@ -80,6 +81,7 @@ final class AppViewModel: ObservableObject {
         guard !droppedURLs.isEmpty, !isScanning else { return }
         isScanning = true
         statusMessage = ""
+        stageMessage = "Preparing scan..."
         progress = ScanProgress()
 
         scanTask?.cancel()
@@ -118,11 +120,17 @@ final class AppViewModel: ObservableObject {
                     DispatchQueue.main.async {
                         self.throttledTick()
                     }
+                },
+                onStage: { fileName, stageName in
+                    DispatchQueue.main.async {
+                        self.stageMessage = "Stage: \(self.prettyStageName(stageName))  File: \(fileName)"
+                    }
                 }
             )
 
             if Task.isCancelled {
                 self.isScanning = false
+                self.stageMessage = ""
                 return
             }
 
@@ -136,6 +144,7 @@ final class AppViewModel: ObservableObject {
 
             if Task.isCancelled {
                 self.isScanning = false
+                self.stageMessage = ""
                 return
             }
 
@@ -149,6 +158,7 @@ final class AppViewModel: ObservableObject {
             } else {
                 statusMessage = "Scan completed: \(doneRun.items.count) items."
             }
+            stageMessage = ""
             isScanning = false
         }
     }
@@ -157,6 +167,7 @@ final class AppViewModel: ObservableObject {
         scanTask?.cancel()
         scanTask = nil
         isScanning = false
+        stageMessage = ""
     }
 
     func clearResults(removeFiles: Bool = true) {
@@ -230,6 +241,18 @@ final class AppViewModel: ObservableObject {
             }
         }
         return (readable, unreadable)
+    }
+
+    private func prettyStageName(_ raw: String) -> String {
+        switch raw {
+        case "forensic_sniff": return "Forensic Sniff"
+        case "file_carve": return "File Carving"
+        case "media_type": return "Media Typing"
+        case "ai_classification": return "AI Classification"
+        case "embeddings": return "Embeddings"
+        case "archive_extract": return "Archive Extraction"
+        default: return raw.replacingOccurrences(of: "_", with: " ").capitalized
+        }
     }
 }
 #endif

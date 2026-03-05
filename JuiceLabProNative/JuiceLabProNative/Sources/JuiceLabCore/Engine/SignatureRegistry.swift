@@ -66,8 +66,19 @@ public enum SignatureRegistry {
     }
 
     static let pdfSignature = FileSignature(type: "pdf", category: .text, fileExtension: "pdf", magic: [0x25, 0x50, 0x44, 0x46]) { data, offset in
-        guard let end = data.range(of: Data("%%EOF".utf8), options: .backwards, in: offset..<data.count)?.upperBound else {
-            return (min(2_000_000, data.count - offset), .partial, 0.72)
+        // Tight validation to reduce false positives inside large binary blobs.
+        guard offset + 8 < data.count else { return nil }
+        guard data[offset + 4] == 0x2D else { return nil } // "%PDF-"
+
+        let maxWindow = min(data.count, offset + 64 * 1_048_576)
+        guard let end = data.range(of: Data("%%EOF".utf8), options: .backwards, in: offset..<maxWindow)?.upperBound else {
+            return nil
+        }
+
+        let sampleWindow = min(end, offset + 2 * 1_048_576)
+        let hasObjectMarker = data.range(of: Data("obj".utf8), options: [], in: offset..<sampleWindow) != nil
+        if !hasObjectMarker {
+            return nil
         }
         return (end - offset, .valid, 0.9)
     }
