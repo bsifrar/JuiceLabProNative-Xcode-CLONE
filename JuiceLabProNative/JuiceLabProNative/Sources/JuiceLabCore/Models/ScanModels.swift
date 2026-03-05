@@ -184,6 +184,7 @@ public struct AnalyzerResult: Codable, Sendable {
     public var nsfwSeverity: NSFWSeverity
     public var nsfwScore: Double
     public var reasonDetections: [ReasonDetection]?
+    public var heatmapPath: String?
 
     // reproducibility stamps
     public var aiModelName: String?
@@ -207,6 +208,7 @@ public struct AnalyzerResult: Codable, Sendable {
         self.nsfwSeverity = .unknown
         self.nsfwScore = 0
         self.reasonDetections = nil
+        self.heatmapPath = nil
 
         self.aiModelName = nil
         self.aiModelHash = nil

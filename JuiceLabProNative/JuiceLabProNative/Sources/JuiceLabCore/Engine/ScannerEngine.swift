@@ -4,6 +4,18 @@ import Foundation
 import AVFoundation
 #endif
 
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
+
+#if canImport(ImageIO)
+import ImageIO
+#endif
+
+#if canImport(UniformTypeIdentifiers)
+import UniformTypeIdentifiers
+#endif
+
 #if canImport(CryptoKit)
 import CryptoKit
 #endif
@@ -267,6 +279,7 @@ public actor ScannerEngine {
         // 1) Copy files
         let exportedItems = try exportItems(run: run, to: runRoot)
         updated.items = exportedItems
+        _ = try generateHeatmaps(for: &updated, at: runRoot)
 
         // 2) Core artifacts
         try writeJSON(updated.settings, to: runRoot.appendingPathComponent("run_settings.json"))
@@ -809,6 +822,113 @@ public actor ScannerEngine {
         return updated
     }
 
+    private func generateHeatmaps(for run: inout ScanRun, at runRoot: URL) throws -> Int {
+        let heatmapDir = runRoot.appendingPathComponent("heatmaps", isDirectory: true)
+        try FileManager.default.createDirectory(at: heatmapDir, withIntermediateDirectories: true)
+
+        var exportedPathBySource: [String: String] = [:]
+        for item in run.items {
+            if let out = item.outputPath {
+                exportedPathBySource[item.sourcePath] = out
+            }
+        }
+
+        var count = 0
+        for idx in run.forensic.analyzerResults.indices {
+            var ar = run.forensic.analyzerResults[idx]
+            guard let dets = ar.reasonDetections?.filter({ $0.bbox != nil }), !dets.isEmpty else { continue }
+
+            let candidatePath = exportedPathBySource[ar.sourcePath] ?? ar.sourcePath
+            guard isImagePath(candidatePath) else { continue }
+
+            let stem = sanitizedFileStem(candidatePath)
+            let dst = heatmapDir.appendingPathComponent("\(stem)-\(String(idx)).png")
+            if renderHeatmap(sourcePath: candidatePath, detections: dets, destination: dst) {
+                ar.heatmapPath = dst.path
+                run.forensic.analyzerResults[idx] = ar
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private func renderHeatmap(sourcePath: String, detections: [ReasonDetection], destination: URL) -> Bool {
+        #if canImport(CoreGraphics) && canImport(ImageIO)
+        let srcURL = URL(fileURLWithPath: sourcePath)
+        guard let cg = AIEngine.shared.loadCGImage(from: srcURL) else { return false }
+
+        let width = cg.width
+        let height = cg.height
+        guard width > 0, height > 0 else { return false }
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return false }
+
+        let bounds = CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height))
+        ctx.interpolationQuality = .high
+        ctx.draw(cg, in: bounds)
+
+        // Subtle global dim + highlighted boxes for explainability.
+        ctx.setFillColor(CGColor(gray: 0, alpha: 0.22))
+        ctx.fill(bounds)
+
+        for det in detections {
+            guard let bb = det.bbox else { continue }
+            let r = CGRect(
+                x: CGFloat(bb.x) * bounds.width,
+                y: CGFloat(bb.y) * bounds.height,
+                width: CGFloat(bb.w) * bounds.width,
+                height: CGFloat(bb.h) * bounds.height
+            ).intersection(bounds)
+            if r.isNull || r.isEmpty { continue }
+
+            let alpha = max(0.16, min(0.58, det.confidence * 0.58))
+            ctx.setFillColor(CGColor(red: 1.0, green: 0.10, blue: 0.14, alpha: alpha))
+            ctx.fill(r)
+
+            ctx.setStrokeColor(CGColor(red: 1.0, green: 0.78, blue: 0.78, alpha: 0.95))
+            ctx.setLineWidth(max(1.5, min(bounds.width, bounds.height) * 0.002))
+            ctx.stroke(r)
+        }
+
+        guard let outCG = ctx.makeImage() else { return false }
+        #if canImport(UniformTypeIdentifiers)
+        let pngType = UTType.png.identifier as CFString
+        #else
+        let pngType = "public.png" as CFString
+        #endif
+        guard let dest = CGImageDestinationCreateWithURL(destination as CFURL, pngType, 1, nil) else { return false }
+        CGImageDestinationAddImage(dest, outCG, nil)
+        return CGImageDestinationFinalize(dest)
+        #else
+        _ = (sourcePath, detections, destination)
+        return false
+        #endif
+    }
+
+    private func isImagePath(_ path: String) -> Bool {
+        let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+        let imageExts: Set<String> = ["jpg","jpeg","png","gif","webp","tif","tiff","bmp","heic","heif","ico"]
+        return imageExts.contains(ext)
+    }
+
+    private func sanitizedFileStem(_ path: String) -> String {
+        let base = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        let filtered = base.map { c -> Character in
+            if c.isLetter || c.isNumber || c == "-" || c == "_" { return c }
+            return "_"
+        }
+        return String(filtered.prefix(80))
+    }
+
     private func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {
         let data = try JSONEncoder.stable.encode(value)
         try data.write(to: url)
@@ -824,6 +944,7 @@ public actor ScannerEngine {
             modelName: run.settings.aiModelName,
             compute: run.settings.aiComputePreference
         )
+        let heatmapsGenerated = run.forensic.analyzerResults.filter { $0.heatmapPath != nil }.count
         return RunAIReport(
             settingsFingerprint: run.settingsFingerprint,
             engineVersion: run.settings.engineVersion,
@@ -834,6 +955,7 @@ public actor ScannerEngine {
             scaAvailable: AIEngine.shared.scaAvailable,
             scaVersion: AIEngine.shared.scaVersionString,
             scoringVersion: 1,
+            heatmapsGenerated: heatmapsGenerated,
             results: run.forensic.analyzerResults
         )
     }
@@ -889,5 +1011,6 @@ private struct RunAIReport: Codable, Sendable {
     var scaAvailable: Bool
     var scaVersion: String
     var scoringVersion: Int
+    var heatmapsGenerated: Int
     var results: [AnalyzerResult]
 }

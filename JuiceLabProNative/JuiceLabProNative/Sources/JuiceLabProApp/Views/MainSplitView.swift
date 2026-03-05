@@ -515,6 +515,9 @@ private struct ForensicDashboardView: View {
                                     Text("Reasons: \(r.reasonDetections?.count ?? 0)")
                                     Text("Media: \(r.carvedMediaCount)")
                                     if r.sqliteHeaderDetected { Text("SQLite").foregroundStyle(.green) }
+                                    if let h = r.heatmapPath {
+                                        Button("Heatmap") { NSWorkspace.shared.open(URL(fileURLWithPath: h)) }
+                                    }
                                     if let p = r.stringsPath {
                                         Button("Strings") { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
                                     }
