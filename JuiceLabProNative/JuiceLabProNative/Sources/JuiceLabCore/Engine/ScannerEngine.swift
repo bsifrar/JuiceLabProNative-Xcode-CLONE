@@ -148,6 +148,13 @@ public actor ScannerEngine {
         run.settingsFingerprint = context.settingsFingerprint
 
         let allFiles = collectFiles(from: paths, enabledTypes: settings.enabledTypes)
+        if allFiles.isEmpty {
+            run.warnings.append(
+                "No candidate files found in selected sources. The source may be empty, hidden-only, unreadable, or filtered by extension settings."
+            )
+            run.completedAt = Date()
+            return run
+        }
 
         let tempRoot = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent(runName, isDirectory: true)
@@ -1101,7 +1108,7 @@ public actor ScannerEngine {
             guard let enumerator = fm.enumerator(
                 at: root,
                 includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
+                options: []
             ) else { continue }
 
             while let next = enumerator.nextObject() as? URL {
