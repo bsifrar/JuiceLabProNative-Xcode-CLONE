@@ -1324,7 +1324,6 @@ public actor ScannerEngine {
 
         for item in run.items {
             if processed.contains(item.sourcePath) { continue }
-            processed.insert(item.sourcePath)
 
             let ioPath = item.outputPath ?? item.sourcePath
             let src = URL(fileURLWithPath: ioPath)
@@ -1335,6 +1334,7 @@ public actor ScannerEngine {
             }
 
             guard let report = extractSQLiteReport(from: ioPath) else { continue }
+            processed.insert(item.sourcePath)
 
             let stem = sanitizedFileStem(ioPath)
             var dst = reportDir.appendingPathComponent("\(stem).sqlite.txt")
@@ -1368,7 +1368,6 @@ public actor ScannerEngine {
 
         for item in run.items {
             if processed.contains(item.sourcePath) { continue }
-            processed.insert(item.sourcePath)
 
             let ioPath = item.outputPath ?? item.sourcePath
             let sourceURL = URL(fileURLWithPath: ioPath)
@@ -1379,6 +1378,7 @@ public actor ScannerEngine {
             }
 
             guard let report = extractPlistReport(from: ioPath) else { continue }
+            processed.insert(item.sourcePath)
 
             let stem = sanitizedFileStem(ioPath)
             var dst = reportDir.appendingPathComponent("\(stem).plist.txt")
