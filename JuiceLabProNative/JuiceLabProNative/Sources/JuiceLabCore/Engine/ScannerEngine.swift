@@ -312,6 +312,7 @@ public actor ScannerEngine {
         _ = generateURLArtifacts(for: &updated, at: runRoot)
         _ = generateAllTextArtifact(for: &updated, at: runRoot)
         _ = generateHashCandidateArtifacts(for: &updated, at: runRoot)
+        _ = generateEvidenceIntelligenceReport(for: updated, at: runRoot)
         _ = generateRunIndexHTML(for: updated, at: runRoot)
         _ = try generateHeatmaps(for: &updated, at: runRoot)
 
@@ -1705,6 +1706,7 @@ public actor ScannerEngine {
           <div class="links">
             <a href="URLs/URLs.html">Recovered URLs</a>
             <a href="txt/All The Text.txt">All The Text</a>
+            <a href="evidence_intelligence/intelligence_report.md">Evidence Intelligence</a>
             <a href="run_forensic.json">Forensic JSON</a>
             <a href="run_items.json">Items JSON</a>
           </div>
@@ -1722,6 +1724,163 @@ public actor ScannerEngine {
             return 1
         } catch {
             return 0
+        }
+    }
+
+    private func generateEvidenceIntelligenceReport(for run: ScanRun, at runRoot: URL) -> Int {
+        let outDir = runRoot.appendingPathComponent("evidence_intelligence", isDirectory: true)
+        try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        let items = run.items
+        let metrics = run.forensic.metrics ?? [:]
+        let total = max(items.count, 1)
+
+        let byCategory = Dictionary(grouping: items, by: \.category)
+        let topCategories = byCategory
+            .map { ($0.key.rawValue, $0.value.count) }
+            .sorted { lhs, rhs in
+                if lhs.1 == rhs.1 { return lhs.0 < rhs.0 }
+                return lhs.1 > rhs.1
+            }
+            .prefix(6)
+
+        var extCounts: [String: Int] = [:]
+        for item in items {
+            let ext = item.fileExtension.isEmpty ? "unknown" : item.fileExtension.lowercased()
+            extCounts[ext, default: 0] += 1
+        }
+        let topExts = extCounts
+            .sorted { lhs, rhs in
+                if lhs.value == rhs.value { return lhs.key < rhs.key }
+                return lhs.value > rhs.value
+            }
+            .prefix(12)
+
+        let urlsPath = outDir.deletingLastPathComponent().appendingPathComponent("URLs/URLs.txt").path
+        let allTextPath = outDir.deletingLastPathComponent().appendingPathComponent("txt/All The Text.txt").path
+        let hashPath = outDir.deletingLastPathComponent().appendingPathComponent("hash_candidates/hashcat_candidates.jsonl").path
+
+        let topURLs = readFirstLines(path: urlsPath, maxLines: 25)
+        let languageSample = readFirstLines(path: allTextPath, maxLines: 30)
+            .joined(separator: "\n")
+            .prefix(1600)
+        let hashKinds = hashKindHistogram(jsonlPath: hashPath)
+
+        let messageLikeSources = items
+            .filter {
+                let p = $0.sourcePath.lowercased()
+                return p.contains("chat") || p.contains("message") || p.contains("sms") || p.contains("mms")
+            }
+            .map { URL(fileURLWithPath: $0.sourcePath).lastPathComponent }
+        let topMessageSources = Array(Set(messageLikeSources)).sorted().prefix(20)
+
+        let riskScore = min(
+            100,
+            (metrics["messages"] ?? 0) * 2 +
+            (metrics["urls"] ?? 0) / 20 +
+            (metrics["hash_candidates"] ?? 0) / 50 +
+            (run.forensic.possibleDecryptableDBs * 8)
+        )
+        let riskBand: String = riskScore >= 70 ? "High" : (riskScore >= 35 ? "Medium" : "Low")
+
+        let profilerAgentLines = topCategories.map { "- \($0.0): \($0.1) (\(Int(Double($0.1) / Double(total) * 100))%)" }
+        let extAgentLines = topExts.map { "- \($0.key): \($0.value)" }
+        let entityAgentLines = topURLs.map { "- \($0)" }
+        let hashAgentLines = hashKinds.map { "- \($0.key): \($0.value)" }
+
+        let md = """
+        # Evidence Intelligence Report
+        
+        ## Run
+        - Name: \(run.name)
+        - Output: \(run.outputRoot)
+        - Scanned items: \(items.count)
+        
+        ## Agent 1: Source Profiler
+        Top categories:
+        \(profilerAgentLines.isEmpty ? "- none" : profilerAgentLines.joined(separator: "\n"))
+        
+        Top file extensions:
+        \(extAgentLines.isEmpty ? "- none" : extAgentLines.joined(separator: "\n"))
+        
+        ## Agent 2: Entity Triage
+        - URLs detected: \(metrics["urls"] ?? 0)
+        - Emails detected: \(metrics["emails"] ?? 0)
+        - Phones detected: \(metrics["phones"] ?? 0)
+        - Message signals: \(metrics["messages"] ?? 0)
+        - Language text signals: \(metrics["language_signals"] ?? 0)
+        
+        Representative URLs:
+        \(entityAgentLines.isEmpty ? "- none" : entityAgentLines.joined(separator: "\n"))
+        
+        ## Agent 3: Hash Triage
+        - Hash candidates: \(metrics["hash_candidates"] ?? 0)
+        Hash families:
+        \(hashAgentLines.isEmpty ? "- none" : hashAgentLines.joined(separator: "\n"))
+        
+        ## Agent 4: Message Surface
+        Potential message-related sources:
+        \(topMessageSources.isEmpty ? "- none" : topMessageSources.map { "- \($0)" }.joined(separator: "\n"))
+        
+        ## Agent 5: Risk Scorer
+        - Risk score: \(riskScore)/100
+        - Risk band: \(riskBand)
+        - Possible decryptable DBs: \(run.forensic.possibleDecryptableDBs)
+        - Nested archives: \(run.forensic.nestedArchives)
+        
+        ## Analyst Notes Seed
+        \(languageSample.isEmpty ? "No text sample available." : String(languageSample))
+        """
+
+        let jsonPayload: [String: Any] = [
+            "run_name": run.name,
+            "output_root": run.outputRoot,
+            "scanned_items": items.count,
+            "metrics": metrics,
+            "risk_score": riskScore,
+            "risk_band": riskBand,
+            "top_categories": topCategories.map { ["category": $0.0, "count": $0.1] },
+            "top_extensions": topExts.map { ["extension": $0.key, "count": $0.value] },
+            "top_urls": topURLs,
+            "hash_families": hashKinds.map { ["kind": $0.key, "count": $0.value] },
+            "message_related_sources": Array(topMessageSources)
+        ]
+
+        do {
+            try md.write(to: outDir.appendingPathComponent("intelligence_report.md"), atomically: true, encoding: .utf8)
+            let data = try JSONSerialization.data(withJSONObject: jsonPayload, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: outDir.appendingPathComponent("intelligence_report.json"))
+            return 1
+        } catch {
+            return 0
+        }
+    }
+
+    private func readFirstLines(path: String, maxLines: Int) -> [String] {
+        guard maxLines > 0, let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+        return raw
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(maxLines)
+            .map { $0 }
+    }
+
+    private func hashKindHistogram(jsonlPath: String) -> [(key: String, value: Int)] {
+        let lines = readFirstLines(path: jsonlPath, maxLines: 20_000)
+        guard !lines.isEmpty else { return [] }
+        var counts: [String: Int] = [:]
+        for line in lines {
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let kind = obj["kind"] as? String,
+                  !kind.isEmpty else { continue }
+            counts[kind, default: 0] += 1
+        }
+        return counts.sorted {
+            if $0.value == $1.value { return $0.key < $1.key }
+            return $0.value > $1.value
         }
     }
 

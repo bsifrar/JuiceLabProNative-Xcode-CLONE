@@ -790,6 +790,11 @@ private struct ForensicDashboardView: View {
                                 openIfExists(path: pathInRun(run.outputRoot, "hash_candidates/hashcat_candidates.txt"))
                             }
                             .disabled(!fileExists(pathInRun(run.outputRoot, "hash_candidates/hashcat_candidates.txt")))
+
+                            Button("Open Intelligence Report") {
+                                openIfExists(path: pathInRun(run.outputRoot, "evidence_intelligence/intelligence_report.md"))
+                            }
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "evidence_intelligence/intelligence_report.md")))
                         }
                         .buttonStyle(.bordered)
                     }
