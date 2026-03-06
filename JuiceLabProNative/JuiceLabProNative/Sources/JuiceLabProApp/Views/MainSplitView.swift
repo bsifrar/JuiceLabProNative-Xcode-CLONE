@@ -843,7 +843,7 @@ private struct HTMLPreviewView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let webView = WKWebView(frame: .zero)
-        webView.setValue(false, forKey: "drawsBackground")
+        webView.setValue(true, forKey: "drawsBackground")
         load(content, into: webView)
         return webView
     }
