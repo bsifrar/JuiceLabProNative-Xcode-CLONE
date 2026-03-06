@@ -770,41 +770,60 @@ private struct ForensicDashboardView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     GroupBox("Forensic Artifacts") {
-                        HStack(spacing: 10) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 8)], spacing: 8) {
                             Button("Open Recovered URLs") {
                                 openIfExists(path: pathInRun(run.outputRoot, "URLs/URLs.html"))
                             }
                             .disabled(!fileExists(pathInRun(run.outputRoot, "URLs/URLs.html")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
                             Button("Open All Text") {
                                 openIfExists(path: pathInRun(run.outputRoot, "txt/All The Text.txt"))
                             }
                             .disabled(!fileExists(pathInRun(run.outputRoot, "txt/All The Text.txt")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
                             Button("Open Run Report") {
                                 openIfExists(path: pathInRun(run.outputRoot, "index.html"))
                             }
                             .disabled(!fileExists(pathInRun(run.outputRoot, "index.html")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
                             Button("Open Hash Candidates") {
                                 openIfExists(path: pathInRun(run.outputRoot, "hash_candidates/hashcat_candidates.txt"))
                             }
                             .disabled(!fileExists(pathInRun(run.outputRoot, "hash_candidates/hashcat_candidates.txt")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
                             Button("Open Intelligence Report") {
                                 openIfExists(path: pathInRun(run.outputRoot, "evidence_intelligence/intelligence_report.md"))
                             }
                             .disabled(!fileExists(pathInRun(run.outputRoot, "evidence_intelligence/intelligence_report.md")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
                             Button("Run Agents") {
                                 vm.runAgents()
                             }
-                            .disabled(vm.isScanning || vm.isRunningAgents || run.outputRoot.isEmpty)
+                            .disabled(vm.isScanning || vm.isRunningAgents || vm.isRunningAgentActions || run.outputRoot.isEmpty)
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
                             Button("Open Agent Summary") {
                                 openIfExists(path: pathInRun(run.outputRoot, "evidence_intelligence/agents_summary.md"))
                             }
                             .disabled(!fileExists(pathInRun(run.outputRoot, "evidence_intelligence/agents_summary.md")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Button("Run Recommended Actions") {
+                                vm.runRecommendedActions()
+                            }
+                            .disabled(vm.isScanning || vm.isRunningAgents || vm.isRunningAgentActions || run.outputRoot.isEmpty)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Button("Open Agent Actions") {
+                                openIfExists(path: pathInRun(run.outputRoot, "evidence_intelligence/actions/actions_report.md"))
+                            }
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "evidence_intelligence/actions/actions_report.md")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .buttonStyle(.bordered)
                     }

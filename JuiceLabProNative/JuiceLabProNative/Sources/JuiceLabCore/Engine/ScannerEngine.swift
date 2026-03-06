@@ -389,6 +389,24 @@ public actor ScannerEngine {
         return updated
     }
 
+    public func performRecommendedActions(for run: ScanRun) async throws -> ScanRun {
+        var updated = run
+        let runRoot = URL(fileURLWithPath: run.outputRoot, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: runRoot.path) else {
+            throw NSError(domain: "ScannerEngine", code: 404, userInfo: [
+                NSLocalizedDescriptionKey: "Run output folder not found. Run a scan/export first."
+            ])
+        }
+
+        _ = generateRecommendedActionArtifacts(for: updated, at: runRoot)
+        _ = generateEvidenceIntelligenceReport(for: updated, at: runRoot)
+        _ = generateAgentOutputs(for: updated, at: runRoot)
+        _ = generateRunIndexHTML(for: updated, at: runRoot)
+        try writeJSON(updated.forensic, to: runRoot.appendingPathComponent("run_forensic.json"))
+        try writeJSON(updated.items, to: runRoot.appendingPathComponent("run_items.json"))
+        return updated
+    }
+
     // MARK: - Stage builder
 
     private func buildStages(tempRoot: URL) -> [ScanStage] {
@@ -1726,6 +1744,7 @@ public actor ScannerEngine {
             <a href="txt/All The Text.txt">All The Text</a>
             <a href="evidence_intelligence/intelligence_report.md">Evidence Intelligence</a>
             <a href="evidence_intelligence/agents_summary.md">Agent Summary</a>
+            <a href="evidence_intelligence/actions/actions_report.md">Agent Actions</a>
             <a href="run_forensic.json">Forensic JSON</a>
             <a href="run_items.json">Items JSON</a>
           </div>
@@ -2138,6 +2157,340 @@ public actor ScannerEngine {
         } catch {
             return written
         }
+    }
+
+    private func generateRecommendedActionArtifacts(for run: ScanRun, at runRoot: URL) -> Int {
+        let outDir = runRoot.appendingPathComponent("evidence_intelligence", isDirectory: true)
+        let actionsDir = outDir.appendingPathComponent("actions", isDirectory: true)
+        try? FileManager.default.createDirectory(at: actionsDir, withIntermediateDirectories: true)
+
+        let urlsPath = runRoot.appendingPathComponent("URLs/URLs.txt").path
+        let allTextPath = runRoot.appendingPathComponent("txt/All The Text.txt").path
+        let urlLines = readFirstLines(path: urlsPath, maxLines: 120_000)
+        let allText = readFirstLines(path: allTextPath, maxLines: 60_000).joined(separator: "\n")
+
+        var filesWritten = 0
+
+        // Action 1: extract likely message text from SQLite chat/message databases.
+        let messageDBCandidates = resolveLikelyMessageDBs(run: run, runRoot: runRoot)
+        var messageRows: [String] = []
+        for db in messageDBCandidates.prefix(30) {
+            let rows = extractMessageRowsFromSQLite(at: db, maxRows: 300)
+            if !rows.isEmpty {
+                let header = "\n# \(db.lastPathComponent)\n"
+                messageRows.append(header)
+                messageRows.append(contentsOf: rows.map { "- \($0)" })
+            }
+        }
+        let messageOutput = messageRows.isEmpty
+            ? "No message-like rows extracted from SQLite candidates.\n"
+            : messageRows.joined(separator: "\n")
+        do {
+            try messageOutput.write(
+                to: actionsDir.appendingPathComponent("messages_extracted.txt"),
+                atomically: true,
+                encoding: .utf8
+            )
+            filesWritten += 1
+        } catch {}
+
+        // Action 2: build practical wordlist from extracted text + URLs + source names for hash workflows.
+        var tokenCounts: [String: Int] = [:]
+        for token in tokenizeForWordlist(allText) {
+            tokenCounts[token, default: 0] += 1
+        }
+        for line in urlLines.prefix(30_000) {
+            for token in tokenizeForWordlist(line) {
+                tokenCounts[token, default: 0] += 1
+            }
+        }
+        for item in run.items.prefix(30_000) {
+            let base = URL(fileURLWithPath: item.sourcePath).lastPathComponent
+            for token in tokenizeForWordlist(base) {
+                tokenCounts[token, default: 0] += 1
+            }
+        }
+        let wordlist = tokenCounts
+            .filter { pair in
+                if pair.key.count < 6 { return false }
+                return pair.key.range(of: #"^\d+$"#, options: .regularExpression) == nil
+            }
+            .sorted { lhs, rhs in
+                if lhs.value == rhs.value { return lhs.key < rhs.key }
+                return lhs.value > rhs.value
+            }
+            .prefix(40_000)
+            .map(\.key)
+            .joined(separator: "\n")
+        do {
+            try wordlist.write(
+                to: actionsDir.appendingPathComponent("hash_wordlist.txt"),
+                atomically: true,
+                encoding: .utf8
+            )
+            filesWritten += 1
+        } catch {}
+
+        // Action 3: cluster recovered URLs by host.
+        var hostCounts: [String: Int] = [:]
+        for line in urlLines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let parsed = URL(string: trimmed) ?? URL(string: "https://\(trimmed)")
+            guard let host = parsed?.host?.lowercased(), !host.isEmpty else { continue }
+            hostCounts[host, default: 0] += 1
+        }
+        let topHosts = hostCounts.sorted {
+            if $0.value == $1.value { return $0.key < $1.key }
+            return $0.value > $1.value
+        }
+        let hostMarkdown = """
+        # URL Host Clusters
+        - Total unique hosts: \(hostCounts.count)
+
+        \(topHosts.prefix(500).map { "- \($0.key): \($0.value)" }.joined(separator: "\n"))
+        """
+        do {
+            try hostMarkdown.write(
+                to: actionsDir.appendingPathComponent("url_clusters.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+            let hostPayload: [String: Any] = [
+                "unique_hosts": hostCounts.count,
+                "top_hosts": topHosts.prefix(2000).map { ["host": $0.key, "count": $0.value] }
+            ]
+            let data = try JSONSerialization.data(withJSONObject: hostPayload, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: actionsDir.appendingPathComponent("url_clusters.json"))
+            filesWritten += 2
+        } catch {}
+
+        // Action 4: quick decryptability signatures against DB-like files.
+        let decryptCandidates = resolveDBLikeFiles(run: run, runRoot: runRoot).prefix(80)
+        var decryptFindings: [[String: Any]] = []
+        var decryptLines: [String] = []
+        for file in decryptCandidates {
+            guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { continue }
+            let head = data.prefix(131_072)
+            let markerChecks: [(String, String)] = [
+                ("SQLCipher", "SQLCipher"),
+                ("Encrypted", "encrypted"),
+                ("Cipher Salt", "cipher_salt"),
+                ("Keychain", "keychain"),
+                ("backup key", "backup key"),
+                ("AES", "aes"),
+                ("PBKDF2", "pbkdf2")
+            ]
+            var markers: [String] = []
+            for (name, needle) in markerChecks {
+                if containsCaseInsensitiveASCII(head, needle: needle) {
+                    markers.append(name)
+                }
+            }
+            if !markers.isEmpty {
+                decryptLines.append("- \(file.lastPathComponent): \(markers.joined(separator: ", "))")
+                decryptFindings.append([
+                    "file": file.path,
+                    "markers": markers
+                ])
+            }
+        }
+        let decryptReport = """
+        # Decryptability Checks
+        - Files with potential cryptographic/encryption signals: \(decryptFindings.count)
+
+        \(decryptLines.isEmpty ? "- none" : decryptLines.joined(separator: "\n"))
+        """
+        do {
+            try decryptReport.write(
+                to: actionsDir.appendingPathComponent("decryptability_checks.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+            let payload: [String: Any] = ["findings": decryptFindings]
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: actionsDir.appendingPathComponent("decryptability_checks.json"))
+            filesWritten += 2
+        } catch {}
+
+        let actionsSummary = """
+        # Agent Actions Report
+        - Run: \(run.name)
+        - Output: \(run.outputRoot)
+        - Generated artifacts: \(filesWritten)
+        - Message DB candidates: \(messageDBCandidates.count)
+        - Extracted message rows: \(messageRows.count)
+        - URL lines processed: \(urlLines.count)
+        - URL unique hosts: \(hostCounts.count)
+        - Decryptability findings: \(decryptFindings.count)
+
+        ## Outputs
+        - actions/messages_extracted.txt
+        - actions/hash_wordlist.txt
+        - actions/url_clusters.md
+        - actions/url_clusters.json
+        - actions/decryptability_checks.md
+        - actions/decryptability_checks.json
+        """
+
+        do {
+            try actionsSummary.write(
+                to: actionsDir.appendingPathComponent("actions_report.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+            let reportPayload: [String: Any] = [
+                "run_name": run.name,
+                "output_root": run.outputRoot,
+                "generated_artifacts": filesWritten,
+                "message_db_candidates": messageDBCandidates.count,
+                "extracted_message_rows": messageRows.count,
+                "url_lines_processed": urlLines.count,
+                "url_unique_hosts": hostCounts.count,
+                "decryptability_findings": decryptFindings.count
+            ]
+            let data = try JSONSerialization.data(withJSONObject: reportPayload, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: actionsDir.appendingPathComponent("actions_report.json"))
+            return filesWritten + 2
+        } catch {
+            return filesWritten
+        }
+    }
+
+    private func resolveLikelyMessageDBs(run: ScanRun, runRoot: URL) -> [URL] {
+        let dbExts: Set<String> = ["db", "sqlite", "sqlite3"]
+        var seen: Set<String> = []
+        var out: [URL] = []
+        for item in run.items {
+            let ext = item.fileExtension.lowercased()
+            let source = item.sourcePath.lowercased()
+            let isCandidate = dbExts.contains(ext) && (
+                source.contains("chat") || source.contains("message") || source.contains("sms") ||
+                source.contains("imessage") || source.contains("mms")
+            )
+            guard isCandidate else { continue }
+            if let path = resolvedReadablePath(for: item, runRoot: runRoot), !seen.contains(path.path) {
+                seen.insert(path.path)
+                out.append(path)
+            }
+        }
+        return out
+    }
+
+    private func resolveDBLikeFiles(run: ScanRun, runRoot: URL) -> [URL] {
+        let dbExts: Set<String> = ["db", "sqlite", "sqlite3", "plist", "bplist", "dat"]
+        var seen: Set<String> = []
+        var out: [URL] = []
+        for item in run.items {
+            let ext = item.fileExtension.lowercased()
+            guard dbExts.contains(ext) else { continue }
+            if let path = resolvedReadablePath(for: item, runRoot: runRoot), !seen.contains(path.path) {
+                seen.insert(path.path)
+                out.append(path)
+            }
+        }
+        return out
+    }
+
+    private func resolvedReadablePath(for item: FoundItem, runRoot: URL) -> URL? {
+        let fm = FileManager.default
+        if let outPath = item.outputPath, !outPath.isEmpty, fm.fileExists(atPath: outPath) {
+            return URL(fileURLWithPath: outPath)
+        }
+        if fm.fileExists(atPath: item.sourcePath) {
+            return URL(fileURLWithPath: item.sourcePath)
+        }
+        let fallback = runRoot.appendingPathComponent(URL(fileURLWithPath: item.sourcePath).lastPathComponent)
+        if fm.fileExists(atPath: fallback.path) {
+            return fallback
+        }
+        return nil
+    }
+
+    private func tokenizeForWordlist(_ text: String) -> [String] {
+        let pattern = #"[A-Za-z0-9_\-\.\@\+\!\#\$\%]{6,32}"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let full = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.matches(in: text, range: full).compactMap { match in
+            guard let range = Range(match.range, in: text) else { return nil }
+            return String(text[range]).lowercased()
+        }
+    }
+
+    private func containsCaseInsensitiveASCII(_ data: Data.SubSequence, needle: String) -> Bool {
+        guard let s = String(data: Data(data), encoding: .utf8)?.lowercased() else { return false }
+        return s.contains(needle.lowercased())
+    }
+
+    private func extractMessageRowsFromSQLite(at dbURL: URL, maxRows: Int) -> [String] {
+        #if canImport(SQLite3)
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbURL.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
+            return []
+        }
+        defer { sqlite3_close(db) }
+
+        var tableStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table';", -1, &tableStmt, nil) == SQLITE_OK else {
+            return []
+        }
+        defer { sqlite3_finalize(tableStmt) }
+
+        let tableHints = ["message", "chat", "sms", "mms", "im", "conversation"]
+        let colHints = ["body", "text", "message", "content", "payload", "subject"]
+
+        var rows: [String] = []
+        while sqlite3_step(tableStmt) == SQLITE_ROW {
+            guard let cName = sqlite3_column_text(tableStmt, 0) else { continue }
+            let table = String(cString: cName)
+            let lowerTable = table.lowercased()
+
+            var columns: [String] = []
+            var pragmaStmt: OpaquePointer?
+            let pragmaSQL = "PRAGMA table_info(\"\(table.replacingOccurrences(of: "\"", with: "\"\""))\");"
+            if sqlite3_prepare_v2(db, pragmaSQL, -1, &pragmaStmt, nil) == SQLITE_OK, let pragmaStmt {
+                defer { sqlite3_finalize(pragmaStmt) }
+                while sqlite3_step(pragmaStmt) == SQLITE_ROW {
+                    if let cCol = sqlite3_column_text(pragmaStmt, 1) {
+                        columns.append(String(cString: cCol))
+                    }
+                }
+            }
+
+            let hasTableHint = tableHints.contains { lowerTable.contains($0) }
+            let textColumns = columns.filter { col in
+                let low = col.lowercased()
+                return colHints.contains { low.contains($0) }
+            }
+            guard hasTableHint || !textColumns.isEmpty else { continue }
+            guard !textColumns.isEmpty else { continue }
+
+            let selectCols = textColumns.prefix(3).map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }.joined(separator: ", ")
+            let sql = "SELECT \(selectCols) FROM \"\(table.replacingOccurrences(of: "\"", with: "\"\""))\" LIMIT \(max(20, min(maxRows, 500)));"
+            var dataStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &dataStmt, nil) == SQLITE_OK, let dataStmt else { continue }
+            defer { sqlite3_finalize(dataStmt) }
+
+            while sqlite3_step(dataStmt) == SQLITE_ROW {
+                var parts: [String] = []
+                let colCount = sqlite3_column_count(dataStmt)
+                if colCount <= 0 { continue }
+                for i in 0..<colCount {
+                    if let cVal = sqlite3_column_text(dataStmt, i) {
+                        let text = String(cString: cVal).trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !text.isEmpty { parts.append(text) }
+                    }
+                }
+                guard !parts.isEmpty else { continue }
+                rows.append("[\(table)] " + parts.joined(separator: " | "))
+                if rows.count >= maxRows { return rows }
+            }
+        }
+        return rows
+        #else
+        _ = (dbURL, maxRows)
+        return []
+        #endif
     }
 
     private func readFirstLines(path: String, maxLines: Int) -> [String] {

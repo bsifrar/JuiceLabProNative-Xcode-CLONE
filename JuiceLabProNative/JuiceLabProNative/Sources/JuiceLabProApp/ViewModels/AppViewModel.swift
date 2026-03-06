@@ -25,6 +25,7 @@ final class AppViewModel: ObservableObject {
     @Published var progress = ScanProgress()
     @Published var isScanning = false
     @Published var isRunningAgents = false
+    @Published var isRunningAgentActions = false
     @Published var droppedURLs: [URL] = []
     @Published var statusMessage: String = ""
     @Published var stageMessage: String = ""
@@ -196,6 +197,30 @@ final class AppViewModel: ObservableObject {
             }
             stageMessage = ""
             isRunningAgents = false
+        }
+    }
+
+    func runRecommendedActions() {
+        guard !isScanning, !isRunningAgents, !isRunningAgentActions, let run = activeRun else { return }
+        isRunningAgentActions = true
+        stageMessage = "Running recommended forensic actions..."
+
+        Task { @MainActor in
+            do {
+                let updated = try await engine.performRecommendedActions(for: run)
+                if let idx = runs.firstIndex(where: { $0.id == updated.id }) {
+                    runs[idx] = updated
+                } else {
+                    runs.insert(updated, at: 0)
+                }
+                selectedRunID = updated.id
+                try? await history.save(run: updated)
+                statusMessage = "Recommended actions completed. Open Agent Actions report."
+            } catch {
+                statusMessage = "Recommended actions failed: \(error.localizedDescription)"
+            }
+            stageMessage = ""
+            isRunningAgentActions = false
         }
     }
 
