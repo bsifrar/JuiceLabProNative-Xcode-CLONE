@@ -120,12 +120,39 @@ private struct ToolbarView: View {
     @State private var showClearResultsDialog = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            ViewThatFits(in: .horizontal) {
-                expandedControls
-                compactControls
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Picker("Mode", selection: $vm.settings.performanceMode) {
+                    Text("Fast").tag(PerformanceMode.fast)
+                    Text("Balanced").tag(PerformanceMode.balanced)
+                    Text("Thorough").tag(PerformanceMode.thorough)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 260)
+
+                Toggle("AI", isOn: $vm.settings.enableAI)
+                    .toggleStyle(.switch)
+                    .fixedSize()
+                    .help("Enable AI classification")
+
+                Toggle(
+                    "Dedupe",
+                    isOn: Binding(
+                        get: { vm.settings.dedupeMode != .off },
+                        set: { vm.settings.dedupeMode = $0 ? .exactBytes : .off }
+                    )
+                )
+                .toggleStyle(.switch)
+                .fixedSize()
+                .help("Remove exact byte-identical duplicates only")
+
+                Button("Add Sources…") { pickSources() }
+
+                Button("Clear Sources") { vm.clearSources() }
+                    .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
+
+                Spacer(minLength: 0)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 8) {
                 Button {
@@ -143,16 +170,17 @@ private struct ToolbarView: View {
                 Button("Stop") { vm.stopScan() }
                     .disabled(!vm.isScanning)
 
-                Menu {
-                    Button("Reveal Run Folder") {
-                        if let run = vm.activeRun {
-                            let url = URL(fileURLWithPath: run.outputRoot)
-                            NSWorkspace.shared.open(url)
-                        } else {
-                            let url = URL(fileURLWithPath: vm.settings.outputFolder)
-                            NSWorkspace.shared.open(url)
-                        }
+                Button("Reveal Run Folder") {
+                    if let run = vm.activeRun {
+                        let url = URL(fileURLWithPath: run.outputRoot)
+                        NSWorkspace.shared.open(url)
+                    } else {
+                        let url = URL(fileURLWithPath: vm.settings.outputFolder)
+                        NSWorkspace.shared.open(url)
                     }
+                }
+
+                Menu {
                     Button("Clear Results", role: .destructive) {
                         showClearResultsDialog = true
                     }
@@ -176,6 +204,8 @@ private struct ToolbarView: View {
                             )
                     )
                 }
+
+                Spacer(minLength: 0)
             }
         }
         .confirmationDialog("Clear all results and run history?", isPresented: $showClearResultsDialog, titleVisibility: .visible) {
@@ -187,81 +217,6 @@ private struct ToolbarView: View {
             Text("This removes results from the app and deletes exported run folders.")
         }
         .cardSurface()
-    }
-
-    private var expandedControls: some View {
-        HStack(spacing: 10) {
-            Picker("Mode", selection: $vm.settings.performanceMode) {
-                Text("Fast").tag(PerformanceMode.fast)
-                Text("Balanced").tag(PerformanceMode.balanced)
-                Text("Thorough").tag(PerformanceMode.thorough)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 260)
-
-            Toggle("AI", isOn: $vm.settings.enableAI)
-                .toggleStyle(.switch)
-                .fixedSize()
-                .help("Enable AI classification")
-
-            Toggle(
-                "Dedupe",
-                isOn: Binding(
-                    get: { vm.settings.dedupeMode != .off },
-                    set: { vm.settings.dedupeMode = $0 ? .exactBytes : .off }
-                )
-            )
-            .toggleStyle(.switch)
-            .fixedSize()
-            .help("Remove exact byte-identical duplicates only")
-
-            Button("Add Sources…") { pickSources() }
-
-            Button("Clear Sources") { vm.clearSources() }
-                .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
-        }
-    }
-
-    private var compactControls: some View {
-        HStack(spacing: 8) {
-            Picker("Mode", selection: $vm.settings.performanceMode) {
-                Text("Fast").tag(PerformanceMode.fast)
-                Text("Balanced").tag(PerformanceMode.balanced)
-                Text("Thorough").tag(PerformanceMode.thorough)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 210)
-
-            Menu {
-                Toggle("Enable AI", isOn: $vm.settings.enableAI)
-                Toggle(
-                    "Dedupe",
-                    isOn: Binding(
-                        get: { vm.settings.dedupeMode != .off },
-                        set: { vm.settings.dedupeMode = $0 ? .exactBytes : .off }
-                    )
-                )
-                Divider()
-                Button("Add Sources…") { pickSources() }
-                Button("Clear Sources") { vm.clearSources() }
-                    .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
-            } label: {
-                HStack(spacing: 6) {
-                    Text("Controls")
-                    Image(systemName: "slider.horizontal.3")
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(AppTheme.input.opacity(0.88))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .stroke(AppTheme.primary.opacity(0.42), lineWidth: 1)
-                        )
-                )
-            }
-        }
     }
 
     private func pickSources() {
