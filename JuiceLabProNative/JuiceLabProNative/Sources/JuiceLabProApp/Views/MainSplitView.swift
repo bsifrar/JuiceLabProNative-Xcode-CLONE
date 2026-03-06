@@ -545,6 +545,22 @@ private struct SettingsPanelView: View {
                 get: { vm.settings.maxFileSizeMB ?? 0 },
                 set: { vm.settings.maxFileSizeMB = $0 == 0 ? nil : $0 }
             ), format: .number)
+
+            Section("AI Classification") {
+                Toggle("Enable AI Classification", isOn: $vm.settings.enableAI)
+                Picker("Threshold Preset", selection: Binding(
+                    get: { vm.settings.resolvedAIThresholdPreset },
+                    set: { vm.settings.aiThresholdPreset = $0.rawValue }
+                )) {
+                    Text("Forensic Balanced (Recommended)").tag(NSFWThresholdPreset.forensicBalanced)
+                    Text("High Recall").tag(NSFWThresholdPreset.highRecall)
+                    Text("High Precision").tag(NSFWThresholdPreset.highPrecision)
+                }
+
+                Text(presetHelpText(vm.settings.resolvedAIThresholdPreset))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .cardSurface()
@@ -560,6 +576,17 @@ private struct SettingsPanelView: View {
 
         if panel.runModal() == .OK, let selectedURL = panel.url {
             vm.settings.outputFolder = selectedURL.path
+        }
+    }
+
+    private func presetHelpText(_ preset: NSFWThresholdPreset) -> String {
+        switch preset {
+        case .forensicBalanced:
+            return "Best default for mixed evidence: keeps strong detections while limiting false positives."
+        case .highRecall:
+            return "Flags more borderline content; best when missing sensitive content is unacceptable."
+        case .highPrecision:
+            return "Stricter thresholds for cleaner output; may miss weaker/partial exposures."
         }
     }
 }

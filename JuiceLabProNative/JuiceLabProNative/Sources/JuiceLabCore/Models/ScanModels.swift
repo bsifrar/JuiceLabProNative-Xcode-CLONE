@@ -169,6 +169,32 @@ public enum AIComputePreference: String, Codable, CaseIterable, Sendable {
     case all // best-effort GPU/ANE/etc.
 }
 
+/// NSFW score thresholds tuned for forensic workflows.
+public enum NSFWThresholdPreset: String, Codable, CaseIterable, Sendable {
+    /// Best default for mixed evidence sets.
+    case forensicBalanced
+    /// Lower thresholds to reduce misses (more false positives).
+    case highRecall
+    /// Higher thresholds to reduce false positives (more misses).
+    case highPrecision
+
+    public var suggestiveThreshold: Double {
+        switch self {
+        case .forensicBalanced: return 0.45
+        case .highRecall: return 0.32
+        case .highPrecision: return 0.58
+        }
+    }
+
+    public var explicitThreshold: Double {
+        switch self {
+        case .forensicBalanced: return 0.85
+        case .highRecall: return 0.70
+        case .highPrecision: return 1.05
+        }
+    }
+}
+
 // MARK: - Analyzer Results / Forensics
 
 public struct AnalyzerResult: Codable, Sendable {
@@ -298,6 +324,8 @@ public struct ScanSettings: Codable, Sendable {
 
     // compute preference
     public var aiComputePreference: AIComputePreference
+    // optional for backward-compatibility with older saved runs
+    public var aiThresholdPreset: String?
 
     // embedding-based semantic search
     public var enableEmbeddings: Bool
@@ -332,6 +360,7 @@ public struct ScanSettings: Codable, Sendable {
         enableAI: Bool = false,
         aiModelName: String = "NSFWReasons",
         aiComputePreference: AIComputePreference = .systemDefault,
+        aiThresholdPreset: String? = NSFWThresholdPreset.forensicBalanced.rawValue,
         enableEmbeddings: Bool = true,
         embeddingModelID: String = "apple_nlembedding_sentence_en",
         exportEmbeddingsSnapshot: Bool = false,
@@ -349,6 +378,7 @@ public struct ScanSettings: Codable, Sendable {
         self.enableAI = enableAI
         self.aiModelName = aiModelName
         self.aiComputePreference = aiComputePreference
+        self.aiThresholdPreset = aiThresholdPreset
 
         self.enableEmbeddings = enableEmbeddings
         self.embeddingModelID = embeddingModelID
@@ -407,6 +437,13 @@ public struct ScanRun: Identifiable, Codable, Sendable {
 // MARK: - Fingerprinting + Stable encoding
 
 public extension ScanSettings {
+    var resolvedAIThresholdPreset: NSFWThresholdPreset {
+        if let raw = aiThresholdPreset, let preset = NSFWThresholdPreset(rawValue: raw) {
+            return preset
+        }
+        return .forensicBalanced
+    }
+
     func fingerprint() -> String {
         do {
             let data = try JSONEncoder.stable.encode(self)

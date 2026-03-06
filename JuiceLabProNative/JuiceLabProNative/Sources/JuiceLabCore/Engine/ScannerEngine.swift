@@ -762,7 +762,8 @@ public actor ScannerEngine {
             // Deterministic scoring
             let (score, severity) = Self.scoreDetections(
                 detections: reasons ?? [],
-                scaSensitive: sensitive
+                scaSensitive: sensitive,
+                preset: context.settings.resolvedAIThresholdPreset
             )
             ar.nsfwScore = score
             ar.nsfwSeverity = severity
@@ -806,7 +807,11 @@ public actor ScannerEngine {
                     compute: context.settings.aiComputePreference
                 ) ?? []
 
-                let (score, severity) = Self.scoreDetections(detections: detections, scaSensitive: sensitive)
+                let (score, severity) = Self.scoreDetections(
+                    detections: detections,
+                    scaSensitive: sensitive,
+                    preset: context.settings.resolvedAIThresholdPreset
+                )
                 bestScore = max(bestScore, score)
                 if severity == .explicit { explicitFrames += 1 }
                 if severityPriority(severity) > severityPriority(bestSeverity) { bestSeverity = severity }
@@ -862,7 +867,11 @@ public actor ScannerEngine {
             ar.scoringVersion = 1
         }
 
-        private static func scoreDetections(detections: [ReasonDetection], scaSensitive: Bool?) -> (Double, NSFWSeverity) {
+        private static func scoreDetections(
+            detections: [ReasonDetection],
+            scaSensitive: Bool?,
+            preset: NSFWThresholdPreset
+        ) -> (Double, NSFWSeverity) {
             // weights are deterministic + easy to tune
             func weight(_ r: NSFWReason) -> Double {
                 switch r {
@@ -888,8 +897,8 @@ public actor ScannerEngine {
             score = min(max(score, 0), 2.5)
 
             let severity: NSFWSeverity
-            if score >= 0.85 { severity = .explicit }
-            else if score >= 0.45 { severity = .suggestive }
+            if score >= preset.explicitThreshold { severity = .explicit }
+            else if score >= preset.suggestiveThreshold { severity = .suggestive }
             else { severity = .none }
 
             // If neither model nor SCA could run, keep unknown
