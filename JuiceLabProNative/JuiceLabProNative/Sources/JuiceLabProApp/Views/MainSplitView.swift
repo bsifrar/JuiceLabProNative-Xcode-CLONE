@@ -622,7 +622,11 @@ private struct PreviewView: View {
         }
 
         let htmlExts: Set<String> = ["html", "htm"]
-        if htmlExts.contains(ext), let html = decodeText(data: data.prefix(256_000)) {
+        let declaredExt = item.fileExtension.lowercased()
+        let declaredType = item.detectedType.lowercased()
+        let htmlCandidate = data.prefix(256_000)
+        if (htmlExts.contains(ext) || htmlExts.contains(declaredExt) || declaredType == "html" || looksLikeHTML(data: htmlCandidate)),
+           let html = decodeText(data: htmlCandidate) {
             await MainActor.run { self.htmlPreview = (html: html, baseURL: url.deletingLastPathComponent()) }
             return
         }
@@ -729,10 +733,33 @@ private struct PreviewView: View {
                 return String(data: bytes, encoding: .utf16BigEndian)
             }
         }
+        if bytes.count >= 32 {
+            let sample = bytes.prefix(512)
+            let evenZeros = stride(from: 0, to: sample.count, by: 2).reduce(0) { acc, idx in
+                acc + (sample[sample.startIndex.advanced(by: idx)] == 0 ? 1 : 0)
+            }
+            let oddZeros = stride(from: 1, to: sample.count, by: 2).reduce(0) { acc, idx in
+                acc + (sample[sample.startIndex.advanced(by: idx)] == 0 ? 1 : 0)
+            }
+            let evenPairs = max(1, sample.count / 2)
+            if oddZeros * 3 > evenPairs {
+                if let s = String(data: bytes, encoding: .utf16LittleEndian) { return s }
+            } else if evenZeros * 3 > evenPairs {
+                if let s = String(data: bytes, encoding: .utf16BigEndian) { return s }
+            }
+        }
         return String(data: bytes, encoding: .utf8)
             ?? String(data: bytes, encoding: .utf16LittleEndian)
             ?? String(data: bytes, encoding: .utf16BigEndian)
             ?? String(data: bytes, encoding: .ascii)
+    }
+
+    private func looksLikeHTML(data: Data.SubSequence) -> Bool {
+        guard let text = decodeText(data: data.prefix(4096))?.lowercased() else { return false }
+        return text.contains("<!doctype html")
+            || text.contains("<html")
+            || text.contains("<head")
+            || text.contains("<body")
     }
 
     private func previewCandidatePaths() -> [String] {
