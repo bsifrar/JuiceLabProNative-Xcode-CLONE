@@ -328,21 +328,6 @@ private struct DropAndStatsView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 let normalizedProgress = vm.progress.totalBytes == 0 ? 0 : min(1, max(0, Double(vm.progress.bytesScanned) / Double(vm.progress.totalBytes)))
-                HStack {
-                    Spacer()
-                    Image(nsImage: NSApp.applicationIconImage)
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFit()
-                        .frame(width: 36, height: 36)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .stroke(AppTheme.primary.opacity(0.55), lineWidth: 1)
-                        )
-                        .shadow(color: AppTheme.primary.opacity(0.35), radius: 8, x: 0, y: 2)
-                    Spacer()
-                }
                 ScanRadarView(progress: normalizedProgress, isScanning: vm.isScanning)
                     .frame(maxWidth: .infinity, minHeight: 170, maxHeight: 170, alignment: .center)
                 Text("Scanned: \(ByteCountFormatter.string(fromByteCount: vm.progress.bytesScanned, countStyle: .file))")
