@@ -228,6 +228,29 @@ private struct DropAndStatsView: View {
 private struct ResultsTableView: View {
     @EnvironmentObject private var vm: AppViewModel
     let items: [FoundItem]
+    @State private var sortedItems: [FoundItem] = []
+    @State private var sortField: SortField = .type
+    @State private var sortAscending: Bool = true
+
+    private enum SortField: String, CaseIterable, Identifiable {
+        case type
+        case source
+        case offset
+        case validation
+        case size
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .type: return "Type"
+            case .source: return "Source"
+            case .offset: return "Offset"
+            case .validation: return "Validation"
+            case .size: return "Size"
+            }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -245,21 +268,86 @@ private struct ResultsTableView: View {
                     }
                 }
             }
-
-            Table(items, selection: Binding(get: {
-                vm.selectedItem?.id
-            }, set: { selectedID in
-                vm.selectedItem = items.first(where: { $0.id == selectedID })
-            })) {
-                TableColumn("Type") { Text($0.detectedType.uppercased()) }
-                TableColumn("Source") { Text(URL(fileURLWithPath: $0.sourcePath).lastPathComponent) }
-                TableColumn("Offset") { Text(String(format: "0x%X", $0.offset)) }
-                TableColumn("Validation") { Text($0.validationStatus.rawValue.capitalized) }
-                TableColumn("Size") { Text(ByteCountFormatter.string(fromByteCount: Int64($0.length), countStyle: .file)) }
+            HStack(spacing: 8) {
+                Text("Sort by:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Sort by", selection: $sortField) {
+                    ForEach(SortField.allCases) { field in
+                        Text(field.title).tag(field)
+                    }
+                }
+                .pickerStyle(.menu)
+                Toggle("Ascending", isOn: $sortAscending)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
             }
+            resultsTable
         }
         .cardSurface()
     }
+
+    private var resultsTable: some View {
+        Table(sortedItems, selection: Binding(
+            get: { vm.selectedItem?.id },
+            set: { selectedID in
+                vm.selectedItem = sortedItems.first(where: { $0.id == selectedID })
+            })
+        ) {
+            TableColumn("Type") { item in
+                Text(item.detectedType.uppercased())
+            }
+            TableColumn("Source") { item in
+                Text(item.sourceDisplayName)
+            }
+            TableColumn("Offset") { item in
+                Text(String(format: "0x%X", item.offset))
+            }
+            TableColumn("Validation") { item in
+                Text(item.validationText.capitalized)
+            }
+            TableColumn("Size") { item in
+                Text(ByteCountFormatter.string(fromByteCount: Int64(item.length), countStyle: .file))
+            }
+        }
+        .onAppear {
+            applySort()
+        }
+        .onChange(of: items) { _, _ in
+            applySort()
+        }
+        .onChange(of: sortField) { _, _ in
+            applySort()
+        }
+        .onChange(of: sortAscending) { _, _ in
+            applySort()
+        }
+    }
+
+    private func applySort() {
+        let sorted = items.sorted { lhs, rhs in
+            let result: Bool
+            switch sortField {
+            case .type:
+                result = lhs.detectedType.localizedCaseInsensitiveCompare(rhs.detectedType) == .orderedAscending
+            case .source:
+                result = lhs.sourceDisplayName.localizedCaseInsensitiveCompare(rhs.sourceDisplayName) == .orderedAscending
+            case .offset:
+                result = lhs.offset < rhs.offset
+            case .validation:
+                result = lhs.validationText.localizedCaseInsensitiveCompare(rhs.validationText) == .orderedAscending
+            case .size:
+                result = lhs.length < rhs.length
+            }
+            return sortAscending ? result : !result
+        }
+        sortedItems = sorted
+    }
+}
+
+private extension FoundItem {
+    var sourceDisplayName: String { URL(fileURLWithPath: sourcePath).lastPathComponent }
+    var validationText: String { validationStatus.rawValue }
 }
 
 private struct InspectorView: View {
