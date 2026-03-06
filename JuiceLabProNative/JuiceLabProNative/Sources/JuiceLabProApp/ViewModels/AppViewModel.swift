@@ -12,6 +12,8 @@ final class AppViewModel: ObservableObject {
         case runs = "Runs"
         case results = "Results"
         case timeline = "Timeline"
+        case graph = "Evidence Graph"
+        case cases = "Cases"
         case forensic = "Forensic"
         case settings = "Settings"
     }

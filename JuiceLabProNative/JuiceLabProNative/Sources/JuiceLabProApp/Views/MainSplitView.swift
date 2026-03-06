@@ -30,6 +30,10 @@ struct MainSplitView: View {
                         SettingsPanelView()
                     } else if vm.route == .timeline {
                         TimelineView()
+                    } else if vm.route == .graph {
+                        EvidenceGraphView()
+                    } else if vm.route == .cases {
+                        CaseBuilderView()
                     } else if vm.route == .forensic {
                         ForensicDashboardView()
                     } else {
@@ -99,6 +103,12 @@ struct MainSplitView: View {
             },
             CommandPaletteItem(title: "Open Timeline", subtitle: "Go to timeline view", keywords: ["timeline", "events"]) {
                 vm.route = .timeline
+            },
+            CommandPaletteItem(title: "Open Evidence Graph", subtitle: "Go to evidence relationship graph", keywords: ["graph", "relationships"]) {
+                vm.route = .graph
+            },
+            CommandPaletteItem(title: "Open Cases", subtitle: "Go to case builder workspace", keywords: ["case", "workspace"]) {
+                vm.route = .cases
             },
             CommandPaletteItem(title: "Open Forensic Summary", subtitle: "Go to forensic dashboard", keywords: ["forensic", "summary"]) {
                 vm.route = .forensic
@@ -178,6 +188,8 @@ private struct SidebarView: View {
         case .runs: return "clock.arrow.circlepath"
         case .results: return "tray.full"
         case .timeline: return "clock"
+        case .graph: return "point.3.connected.trianglepath.dotted"
+        case .cases: return "folder.badge.person.crop"
         case .forensic: return "shield.lefthalf.filled"
         case .settings: return "gearshape"
         }
@@ -1769,6 +1781,247 @@ private struct TimelineView: View {
         case .archives: return .pink
         case .uncertain: return .gray
         }
+    }
+}
+
+private struct EvidenceGraphNode: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let kind: String
+    let count: Int
+}
+
+private struct EvidenceGraphEdge: Identifiable {
+    let id = UUID()
+    let from: String
+    let to: String
+    let weight: Int
+}
+
+private struct EvidenceGraphView: View {
+    @EnvironmentObject private var vm: AppViewModel
+
+    private var graphData: ([EvidenceGraphNode], [EvidenceGraphEdge]) {
+        guard let run = vm.activeRun else { return ([], []) }
+        var sourceCounts: [String: Int] = [:]
+        var typeCounts: [String: Int] = [:]
+        var pairCounts: [String: Int] = [:]
+
+        for item in run.items.prefix(3000) {
+            let sourceFolder = URL(fileURLWithPath: item.sourcePath).deletingLastPathComponent().lastPathComponent
+            let type = item.detectedType.uppercased()
+            sourceCounts[sourceFolder, default: 0] += 1
+            typeCounts[type, default: 0] += 1
+            pairCounts["\(sourceFolder)|\(type)", default: 0] += 1
+        }
+
+        let topSources = sourceCounts.sorted { $0.value > $1.value }.prefix(12)
+        let topTypes = typeCounts.sorted { $0.value > $1.value }.prefix(10)
+
+        let sourceSet = Set(topSources.map(\.key))
+        let typeSet = Set(topTypes.map(\.key))
+
+        let sourceNodes = topSources.map { EvidenceGraphNode(id: "src:\($0.key)", title: $0.key, kind: "source", count: $0.value) }
+        let typeNodes = topTypes.map { EvidenceGraphNode(id: "type:\($0.key)", title: $0.key, kind: "type", count: $0.value) }
+        let nodes = sourceNodes + typeNodes
+
+        let edges = pairCounts.compactMap { key, value -> EvidenceGraphEdge? in
+            let parts = key.split(separator: "|", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { return nil }
+            let src = parts[0]
+            let type = parts[1]
+            guard sourceSet.contains(src), typeSet.contains(type) else { return nil }
+            return EvidenceGraphEdge(from: "src:\(src)", to: "type:\(type)", weight: value)
+        }
+        .sorted { $0.weight > $1.weight }
+        .prefix(40)
+
+        return (nodes, Array(edges))
+    }
+
+    var body: some View {
+        let (nodes, edges) = graphData
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Evidence Graph")
+                .font(.title2.bold())
+            Text("Relationship map of source folders and artifact types from the current run.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if nodes.isEmpty {
+                Text("No graph data yet. Run a scan and open Evidence Graph.")
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 12) {
+                    GraphCanvasView(nodes: nodes, edges: edges)
+                        .frame(minHeight: 360)
+                        .cardSurface()
+                    List(edges.prefix(24)) { edge in
+                        let src = edge.from.replacingOccurrences(of: "src:", with: "")
+                        let dst = edge.to.replacingOccurrences(of: "type:", with: "")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(src) → \(dst)")
+                                .font(.caption.weight(.semibold))
+                            Text("\(edge.weight) artifacts")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(width: 280)
+                    .cardSurface()
+                }
+            }
+        }
+        .padding()
+        .cardSurface()
+    }
+}
+
+private struct GraphCanvasView: View {
+    let nodes: [EvidenceGraphNode]
+    let edges: [EvidenceGraphEdge]
+
+    var body: some View {
+        GeometryReader { geo in
+            let positions = layout(in: geo.size)
+            ZStack {
+                ForEach(edges) { edge in
+                    if let a = positions[edge.from], let b = positions[edge.to] {
+                        Path { p in
+                            p.move(to: a)
+                            p.addLine(to: b)
+                        }
+                        .stroke(AppTheme.primary.opacity(0.18 + min(Double(edge.weight) / 200.0, 0.45)), lineWidth: 1.2)
+                    }
+                }
+                ForEach(nodes) { node in
+                    if let point = positions[node.id] {
+                        VStack(spacing: 4) {
+                            Circle()
+                                .fill(node.kind == "source" ? AppTheme.primary.opacity(0.85) : Color.orange.opacity(0.85))
+                                .frame(width: 16, height: 16)
+                            Text(node.title)
+                                .font(.caption2)
+                                .lineLimit(1)
+                                .frame(maxWidth: 90)
+                                .truncationMode(.tail)
+                            Text("\(node.count)")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        .position(point)
+                    }
+                }
+            }
+        }
+    }
+
+    private func layout(in size: CGSize) -> [String: CGPoint] {
+        var map: [String: CGPoint] = [:]
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        let radiusSource = min(size.width, size.height) * 0.33
+        let radiusType = min(size.width, size.height) * 0.20
+
+        let sources = nodes.filter { $0.kind == "source" }
+        let types = nodes.filter { $0.kind == "type" }
+
+        for (idx, node) in sources.enumerated() {
+            let angle = (Double(idx) / Double(max(sources.count, 1))) * (Double.pi * 2)
+            map[node.id] = CGPoint(
+                x: center.x + cos(angle) * radiusSource,
+                y: center.y + sin(angle) * radiusSource
+            )
+        }
+        for (idx, node) in types.enumerated() {
+            let angle = (Double(idx) / Double(max(types.count, 1))) * (Double.pi * 2)
+            map[node.id] = CGPoint(
+                x: center.x + cos(angle) * radiusType,
+                y: center.y + sin(angle) * radiusType
+            )
+        }
+        return map
+    }
+}
+
+private struct CaseBuilderView: View {
+    @EnvironmentObject private var vm: AppViewModel
+    @State private var caseName = "Untitled Case"
+    @State private var notes = ""
+    @State private var selectedIDs = Set<UUID>()
+    @State private var filter = ""
+
+    private var runItems: [FoundItem] {
+        vm.activeRun?.items ?? []
+    }
+
+    private var candidateItems: [FoundItem] {
+        let q = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return Array(runItems.prefix(1500)) }
+        return runItems.filter {
+            $0.sourcePath.lowercased().contains(q) ||
+            $0.detectedType.lowercased().contains(q) ||
+            $0.fileExtension.lowercased().contains(q)
+        }
+        .prefix(1500)
+        .map { $0 }
+    }
+
+    private var selectedItems: [FoundItem] {
+        runItems.filter { selectedIDs.contains($0.id) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("AI Case Builder")
+                .font(.title2.bold())
+            HStack(spacing: 10) {
+                TextField("Case Name", text: $caseName)
+                    .textFieldStyle(.roundedBorder)
+                Button("Clear Selection") {
+                    selectedIDs.removeAll()
+                }
+            }
+            TextEditor(text: $notes)
+                .frame(minHeight: 72, maxHeight: 120)
+                .scrollContentBackground(.hidden)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(AppTheme.primary.opacity(0.20), lineWidth: 1))
+
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Search run artifacts…", text: $filter)
+                        .textFieldStyle(.roundedBorder)
+                    List(candidateItems, selection: $selectedIDs) { item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(URL(fileURLWithPath: item.sourcePath).lastPathComponent)
+                                .font(.caption.weight(.semibold))
+                            Text("\(item.detectedType.uppercased()) • \(URL(fileURLWithPath: item.sourcePath).deletingLastPathComponent().lastPathComponent)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(item.id)
+                    }
+                }
+                .cardSurface()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Case Evidence (\(selectedItems.count))")
+                        .font(.headline)
+                    List(selectedItems) { item in
+                        HStack {
+                            Text(item.detectedType.uppercased())
+                                .font(.caption.monospaced())
+                                .foregroundStyle(AppTheme.primary)
+                            Text(URL(fileURLWithPath: item.sourcePath).lastPathComponent)
+                                .font(.caption)
+                        }
+                    }
+                }
+                .frame(width: 320)
+                .cardSurface()
+            }
+        }
+        .padding()
+        .cardSurface()
     }
 }
 
