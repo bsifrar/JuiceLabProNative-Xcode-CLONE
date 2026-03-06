@@ -39,8 +39,21 @@ struct MainSplitView: View {
                 }
                 .padding()
             } detail: {
-                InspectorView(item: vm.selectedItem)
-                    .padding()
+                ZStack(alignment: .leading) {
+                    InspectorView(item: vm.selectedItem)
+                        .padding()
+                        .navigationSplitViewColumnWidth(min: 300, ideal: 360, max: 540)
+
+                    RoundedRectangle(cornerRadius: 999)
+                        .fill(AppTheme.primary.opacity(0.65))
+                        .frame(width: 4, height: 86)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 999)
+                                .stroke(Color.white.opacity(0.35), lineWidth: 0.5)
+                        )
+                        .shadow(color: AppTheme.primary.opacity(0.35), radius: 6, x: 0, y: 0)
+                        .padding(.leading, 2)
+                }
             }
         }
         .tint(AppTheme.primary)
@@ -87,40 +100,10 @@ private struct ToolbarView: View {
     @State private var showClearResultsDialog = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            ScrollView(.horizontal, showsIndicators: true) {
-                HStack {
-                    Picker("Mode", selection: $vm.settings.performanceMode) {
-                        Text("Fast").tag(PerformanceMode.fast)
-                        Text("Balanced").tag(PerformanceMode.balanced)
-                        Text("Thorough").tag(PerformanceMode.thorough)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 320)
-
-                    Toggle("AI", isOn: $vm.settings.enableAI)
-                        .toggleStyle(.switch)
-                        .help("Enable AI classification")
-
-                    Toggle(
-                        "Dedupe",
-                        isOn: Binding(
-                            get: { vm.settings.dedupeMode != .off },
-                            set: { vm.settings.dedupeMode = $0 ? .exactBytes : .off }
-                        )
-                    )
-                    .toggleStyle(.switch)
-                    .help("Remove exact byte-identical duplicates only")
-
-                    Button("Add Sources…") {
-                        pickSources()
-                    }
-
-                    Button("Clear Sources") {
-                        vm.clearSources()
-                    }
-                    .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
-                }
+        HStack(spacing: 10) {
+            ViewThatFits(in: .horizontal) {
+                expandedControls
+                compactControls
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -140,7 +123,7 @@ private struct ToolbarView: View {
                 Button("Stop") { vm.stopScan() }
                     .disabled(!vm.isScanning)
 
-                Menu("More") {
+                Menu {
                     Button("Reveal Run Folder") {
                         if let run = vm.activeRun {
                             let url = URL(fileURLWithPath: run.outputRoot)
@@ -154,6 +137,24 @@ private struct ToolbarView: View {
                         showClearResultsDialog = true
                     }
                     .disabled(vm.isScanning || vm.runs.isEmpty)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("More")
+                        Image(systemName: "chevron.down")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(AppTheme.text)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(AppTheme.input.opacity(0.88))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(AppTheme.primary.opacity(0.42), lineWidth: 1)
+                            )
+                    )
                 }
             }
         }
@@ -166,6 +167,81 @@ private struct ToolbarView: View {
             Text("This removes results from the app and deletes exported run folders.")
         }
         .cardSurface()
+    }
+
+    private var expandedControls: some View {
+        HStack(spacing: 10) {
+            Picker("Mode", selection: $vm.settings.performanceMode) {
+                Text("Fast").tag(PerformanceMode.fast)
+                Text("Balanced").tag(PerformanceMode.balanced)
+                Text("Thorough").tag(PerformanceMode.thorough)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 260)
+
+            Toggle("AI", isOn: $vm.settings.enableAI)
+                .toggleStyle(.switch)
+                .fixedSize()
+                .help("Enable AI classification")
+
+            Toggle(
+                "Dedupe",
+                isOn: Binding(
+                    get: { vm.settings.dedupeMode != .off },
+                    set: { vm.settings.dedupeMode = $0 ? .exactBytes : .off }
+                )
+            )
+            .toggleStyle(.switch)
+            .fixedSize()
+            .help("Remove exact byte-identical duplicates only")
+
+            Button("Add Sources…") { pickSources() }
+
+            Button("Clear Sources") { vm.clearSources() }
+                .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
+        }
+    }
+
+    private var compactControls: some View {
+        HStack(spacing: 8) {
+            Picker("Mode", selection: $vm.settings.performanceMode) {
+                Text("Fast").tag(PerformanceMode.fast)
+                Text("Balanced").tag(PerformanceMode.balanced)
+                Text("Thorough").tag(PerformanceMode.thorough)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 210)
+
+            Menu {
+                Toggle("Enable AI", isOn: $vm.settings.enableAI)
+                Toggle(
+                    "Dedupe",
+                    isOn: Binding(
+                        get: { vm.settings.dedupeMode != .off },
+                        set: { vm.settings.dedupeMode = $0 ? .exactBytes : .off }
+                    )
+                )
+                Divider()
+                Button("Add Sources…") { pickSources() }
+                Button("Clear Sources") { vm.clearSources() }
+                    .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Controls")
+                    Image(systemName: "slider.horizontal.3")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(AppTheme.input.opacity(0.88))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(AppTheme.primary.opacity(0.42), lineWidth: 1)
+                        )
+                )
+            }
+        }
     }
 
     private func pickSources() {
@@ -252,8 +328,23 @@ private struct DropAndStatsView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 let normalizedProgress = vm.progress.totalBytes == 0 ? 0 : min(1, max(0, Double(vm.progress.bytesScanned) / Double(vm.progress.totalBytes)))
+                HStack {
+                    Spacer()
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(width: 36, height: 36)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(AppTheme.primary.opacity(0.55), lineWidth: 1)
+                        )
+                        .shadow(color: AppTheme.primary.opacity(0.35), radius: 8, x: 0, y: 2)
+                    Spacer()
+                }
                 ScanRadarView(progress: normalizedProgress, isScanning: vm.isScanning)
-                    .frame(maxWidth: .infinity, minHeight: 170, maxHeight: 170)
+                    .frame(maxWidth: .infinity, minHeight: 170, maxHeight: 170, alignment: .center)
                 Text("Scanned: \(ByteCountFormatter.string(fromByteCount: vm.progress.bytesScanned, countStyle: .file))")
                 Text(String(format: "%.1f MB/s", vm.progress.mbPerSecond))
                 Text("ETA: \(Int(vm.progress.etaSeconds))s")
@@ -1072,6 +1163,7 @@ private struct ScanRadarView: View {
                     .foregroundStyle(AppTheme.primary)
             }
             .frame(width: size, height: size)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .shadow(color: AppTheme.primary.opacity(0.20), radius: 12, x: 0, y: 0)
         }
         .onAppear { updateAnimation() }
