@@ -548,12 +548,9 @@ private struct PreviewView: View {
 
     var body: some View {
         ZStack {
-            if let html = htmlPreview {
+            if htmlPreview != nil {
                 VStack(spacing: 8) {
-                    HTMLPreviewView(content: html)
-                        .frame(minHeight: 220)
                     if !htmlRenderedText.isEmpty {
-                        Divider()
                         ScrollView {
                             Text(htmlRenderedText)
                                 .font(.system(size: 12))
@@ -561,7 +558,7 @@ private struct PreviewView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(6)
                         }
-                        .frame(minHeight: 90, maxHeight: 180)
+                        .frame(minHeight: 180, maxHeight: 260)
                     }
                     if !htmlRawText.isEmpty {
                         Divider()
@@ -572,7 +569,7 @@ private struct PreviewView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(6)
                         }
-                        .frame(minHeight: 90, maxHeight: 180)
+                        .frame(minHeight: 110, maxHeight: 200)
                     }
                 }
             } else if let doc = pdfDocument {
