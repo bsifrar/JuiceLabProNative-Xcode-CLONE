@@ -314,6 +314,7 @@ public actor ScannerEngine {
         _ = generateHashCandidateArtifacts(for: &updated, at: runRoot)
         _ = generateEvidenceIntelligenceReport(for: updated, at: runRoot)
         _ = generateAgentOutputs(for: updated, at: runRoot)
+        _ = generateCoverageAudit(for: updated, at: runRoot)
         _ = generateRunIndexHTML(for: updated, at: runRoot)
         _ = try generateHeatmaps(for: &updated, at: runRoot)
 
@@ -383,6 +384,7 @@ public actor ScannerEngine {
 
         _ = generateEvidenceIntelligenceReport(for: updated, at: runRoot)
         _ = generateAgentOutputs(for: updated, at: runRoot)
+        _ = generateCoverageAudit(for: updated, at: runRoot)
         _ = generateRunIndexHTML(for: updated, at: runRoot)
         try writeJSON(updated.forensic, to: runRoot.appendingPathComponent("run_forensic.json"))
         try writeJSON(updated.items, to: runRoot.appendingPathComponent("run_items.json"))
@@ -401,6 +403,7 @@ public actor ScannerEngine {
         _ = generateRecommendedActionArtifacts(for: updated, at: runRoot)
         _ = generateEvidenceIntelligenceReport(for: updated, at: runRoot)
         _ = generateAgentOutputs(for: updated, at: runRoot)
+        _ = generateCoverageAudit(for: updated, at: runRoot)
         _ = generateRunIndexHTML(for: updated, at: runRoot)
         try writeJSON(updated.forensic, to: runRoot.appendingPathComponent("run_forensic.json"))
         try writeJSON(updated.items, to: runRoot.appendingPathComponent("run_items.json"))
@@ -1745,6 +1748,7 @@ public actor ScannerEngine {
             <a href="evidence_intelligence/intelligence_report.md">Evidence Intelligence</a>
             <a href="evidence_intelligence/agents_summary.md">Agent Summary</a>
             <a href="evidence_intelligence/actions/actions_report.md">Agent Actions</a>
+            <a href="coverage/coverage_report.md">Coverage Audit</a>
             <a href="run_forensic.json">Forensic JSON</a>
             <a href="run_items.json">Items JSON</a>
           </div>
@@ -2354,6 +2358,152 @@ public actor ScannerEngine {
             return filesWritten + 2
         } catch {
             return filesWritten
+        }
+    }
+
+    private func generateCoverageAudit(for run: ScanRun, at runRoot: URL) -> Int {
+        let outDir = runRoot.appendingPathComponent("coverage", isDirectory: true)
+        try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        let groups = Dictionary(grouping: run.items, by: \.sourcePath)
+        guard !groups.isEmpty else { return 0 }
+
+        let fm = FileManager.default
+        var rows: [[String: Any]] = []
+
+        for (source, items) in groups {
+            let sourceURL = URL(fileURLWithPath: source)
+            let sourceSize = (try? fm.attributesOfItem(atPath: source)[.size] as? NSNumber)?.intValue ?? 0
+
+            var validBytes = 0
+            var partialBytes = 0
+            var uncertainBytes = 0
+            var topTypes: [String: Int] = [:]
+
+            for item in items {
+                let length = max(item.length, 0)
+                switch item.validationStatus {
+                case .valid: validBytes += length
+                case .partial: partialBytes += length
+                case .uncertain: uncertainBytes += length
+                }
+                topTypes[item.detectedType.lowercased(), default: 0] += 1
+            }
+
+            let parsedBytes = validBytes + partialBytes
+            let coveragePct: Double
+            if sourceSize > 0 {
+                coveragePct = min(100.0, (Double(parsedBytes) / Double(sourceSize)) * 100.0)
+            } else {
+                coveragePct = 0
+            }
+
+            let topTypeList = topTypes
+                .sorted { lhs, rhs in
+                    if lhs.value == rhs.value { return lhs.key < rhs.key }
+                    return lhs.value > rhs.value
+                }
+                .prefix(5)
+                .map { "\($0.key):\($0.value)" }
+
+            let alert = sourceSize > (1 * 1_048_576) && coveragePct < 5.0
+            rows.append([
+                "source": source,
+                "file": sourceURL.lastPathComponent,
+                "source_bytes": sourceSize,
+                "item_count": items.count,
+                "valid_bytes": validBytes,
+                "partial_bytes": partialBytes,
+                "uncertain_bytes": uncertainBytes,
+                "parsed_coverage_percent": coveragePct,
+                "validation_alert": alert,
+                "top_detected_types": topTypeList
+            ])
+        }
+
+        let sortedRows = rows.sorted { lhs, rhs in
+            let la = lhs["validation_alert"] as? Bool ?? false
+            let ra = rhs["validation_alert"] as? Bool ?? false
+            if la != ra { return la && !ra }
+            let lc = lhs["parsed_coverage_percent"] as? Double ?? 0
+            let rc = rhs["parsed_coverage_percent"] as? Double ?? 0
+            if lc == rc {
+                let ln = lhs["file"] as? String ?? ""
+                let rn = rhs["file"] as? String ?? ""
+                return ln < rn
+            }
+            return lc < rc
+        }
+
+        let flagged = sortedRows.filter { $0["validation_alert"] as? Bool == true }
+
+        var lines: [String] = []
+        lines.append("# Coverage Audit")
+        lines.append("- Run: \(run.name)")
+        lines.append("- Sources analyzed: \(sortedRows.count)")
+        lines.append("- Low-coverage alerts: \(flagged.count)")
+        lines.append("")
+        lines.append("## Alerts")
+        if flagged.isEmpty {
+            lines.append("- none")
+        } else {
+            for row in flagged.prefix(100) {
+                let file = row["file"] as? String ?? "unknown"
+                let pct = row["parsed_coverage_percent"] as? Double ?? 0
+                let bytes = row["source_bytes"] as? Int ?? 0
+                lines.append("- \(file): \(String(format: "%.2f", pct))% parsed from \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))")
+            }
+        }
+        lines.append("")
+        lines.append("## Per Source")
+        for row in sortedRows.prefix(500) {
+            let file = row["file"] as? String ?? "unknown"
+            let pct = row["parsed_coverage_percent"] as? Double ?? 0
+            let count = row["item_count"] as? Int ?? 0
+            let sourceBytes = row["source_bytes"] as? Int ?? 0
+            let validBytes = row["valid_bytes"] as? Int ?? 0
+            let partialBytes = row["partial_bytes"] as? Int ?? 0
+            let uncertainBytes = row["uncertain_bytes"] as? Int ?? 0
+            let types = (row["top_detected_types"] as? [String] ?? []).joined(separator: ", ")
+            lines.append("- \(file)")
+            lines.append("  coverage=\(String(format: "%.2f", pct))% items=\(count) source=\(ByteCountFormatter.string(fromByteCount: Int64(sourceBytes), countStyle: .file)) valid=\(ByteCountFormatter.string(fromByteCount: Int64(validBytes), countStyle: .file)) partial=\(ByteCountFormatter.string(fromByteCount: Int64(partialBytes), countStyle: .file)) uncertain=\(ByteCountFormatter.string(fromByteCount: Int64(uncertainBytes), countStyle: .file)) types=[\(types)]")
+        }
+
+        do {
+            try lines.joined(separator: "\n").write(
+                to: outDir.appendingPathComponent("coverage_report.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+            let csvHeader = "file,source_bytes,item_count,valid_bytes,partial_bytes,uncertain_bytes,parsed_coverage_percent,validation_alert,source\n"
+            let csvRows = sortedRows.map { row -> String in
+                let file = (row["file"] as? String ?? "").replacingOccurrences(of: "\"", with: "\"\"")
+                let source = (row["source"] as? String ?? "").replacingOccurrences(of: "\"", with: "\"\"")
+                let sourceBytes = row["source_bytes"] as? Int ?? 0
+                let itemCount = row["item_count"] as? Int ?? 0
+                let validBytes = row["valid_bytes"] as? Int ?? 0
+                let partialBytes = row["partial_bytes"] as? Int ?? 0
+                let uncertainBytes = row["uncertain_bytes"] as? Int ?? 0
+                let pct = row["parsed_coverage_percent"] as? Double ?? 0
+                let alert = row["validation_alert"] as? Bool ?? false
+                return "\"\(file)\",\(sourceBytes),\(itemCount),\(validBytes),\(partialBytes),\(uncertainBytes),\(String(format: "%.4f", pct)),\(alert),\"\(source)\""
+            }.joined(separator: "\n")
+            try (csvHeader + csvRows + "\n").write(
+                to: outDir.appendingPathComponent("coverage_report.csv"),
+                atomically: true,
+                encoding: .utf8
+            )
+            let payload: [String: Any] = [
+                "run_name": run.name,
+                "sources_analyzed": sortedRows.count,
+                "low_coverage_alerts": flagged.count,
+                "rows": sortedRows
+            ]
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: outDir.appendingPathComponent("coverage_report.json"))
+            return 3
+        } catch {
+            return 0
         }
     }
 

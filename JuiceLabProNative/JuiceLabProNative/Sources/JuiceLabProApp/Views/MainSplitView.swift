@@ -848,6 +848,12 @@ private struct ForensicDashboardView: View {
                             }
                             .disabled(!fileExists(pathInRun(run.outputRoot, "evidence_intelligence/actions/decryptability_checks.md")))
                             .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Button("Open Coverage Audit") {
+                                openIfExists(path: pathInRun(run.outputRoot, "coverage/coverage_report.md"))
+                            }
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "coverage/coverage_report.md")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .buttonStyle(.bordered)
                     }

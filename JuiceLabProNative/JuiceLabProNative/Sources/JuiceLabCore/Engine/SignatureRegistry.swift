@@ -111,17 +111,31 @@ public enum SignatureRegistry {
     }
 
     static let tgzSignature = FileSignature(type: "tgz", category: .archives, fileExtension: "tgz", magic: [0x1F, 0x8B]) { data, offset in
-        // Alias for .tar.gz
-        return (min(32_000_000, data.count - offset), .partial, 0.8)
+        // Require a minimally valid gzip header to reduce false positives in DB blobs.
+        guard offset + 10 <= data.count else { return nil }
+        let method = data[offset + 2]
+        let flags = data[offset + 3]
+        guard method == 0x08 else { return nil }        // deflate
+        guard (flags & 0xE0) == 0 else { return nil }   // reserved bits must be unset
+        return (min(24_000_000, data.count - offset), .partial, 0.7)
     }
 
     static let tbz2Signature = FileSignature(type: "tbz2", category: .archives, fileExtension: "tbz2", magic: [0x42, 0x5A, 0x68]) { data, offset in
-        // Alias for .tar.bz2
-        return (min(32_000_000, data.count - offset), .partial, 0.78)
+        // Validate bzip2 block marker "1AY&SY" near stream start.
+        guard offset + 10 <= data.count else { return nil }
+        let marker = [UInt8]("1AY&SY".utf8)
+        let start = offset + 4
+        guard start + marker.count <= data.count else { return nil }
+        let window = data[start..<(start + marker.count)]
+        guard window.elementsEqual(marker) else { return nil }
+        return (min(24_000_000, data.count - offset), .partial, 0.74)
     }
 
     static let txzSignature = FileSignature(type: "txz", category: .archives, fileExtension: "txz", magic: [0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]) { data, offset in
-        // Alias for .tar.xz
-        return (min(32_000_000, data.count - offset), .partial, 0.82)
+        // Validate basic XZ stream flags/footer byte pattern window.
+        guard offset + 12 <= data.count else { return nil }
+        let streamFlags = data[offset + 6]
+        guard streamFlags == 0x00 || streamFlags == 0x01 else { return nil }
+        return (min(24_000_000, data.count - offset), .partial, 0.76)
     }
 }
