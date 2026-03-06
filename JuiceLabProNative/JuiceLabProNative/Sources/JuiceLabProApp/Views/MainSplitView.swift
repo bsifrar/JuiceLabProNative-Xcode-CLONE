@@ -638,128 +638,130 @@ private struct ForensicDashboardView: View {
     @EnvironmentObject private var vm: AppViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Forensic Summary").font(.title3.bold())
-            if let run = vm.activeRun {
-                let f = run.forensic
-                let metrics = f.metrics ?? [:]
-                HStack {
-                    SummaryCard(title: ".REM Files", value: "\(f.remCount)")
-                    SummaryCard(title: "Media Recovered", value: "\(f.mediaCount)")
-                    SummaryCard(title: "Possible Decryptable DBs", value: "\(f.possibleDecryptableDBs)")
-                    SummaryCard(title: "Nested Archives", value: "\(f.nestedArchives)")
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                HStack {
-                    SummaryCard(title: "Decryptable Signals", value: "\(metrics["decryptable"] ?? 0)")
-                    SummaryCard(title: "Thumbnails", value: "\(metrics["thumbnails"] ?? 0)")
-                    SummaryCard(title: "Message Signals", value: "\(metrics["messages"] ?? 0)")
-                    SummaryCard(title: "Keys", value: "\(max(metrics["keys"] ?? 0, f.keyFiles.count))")
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                HStack {
-                    SummaryCard(title: "Emails", value: "\(metrics["emails"] ?? 0)")
-                    SummaryCard(title: "URLs", value: "\(metrics["urls"] ?? 0)")
-                    SummaryCard(title: "Phones", value: "\(metrics["phones"] ?? 0)")
-                    SummaryCard(title: "Language Text", value: "\(metrics["language_signals"] ?? 0)")
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                HStack {
-                    SummaryCard(title: "Hash Candidates", value: "\(metrics["hash_candidates"] ?? 0)")
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                HStack {
-                    SummaryCard(title: "AI Safe", value: "\(aiCount(.none, in: f.analyzerResults))")
-                    SummaryCard(title: "AI Suggestive", value: "\(aiCount(.suggestive, in: f.analyzerResults))")
-                    SummaryCard(title: "AI Explicit", value: "\(aiCount(.explicit, in: f.analyzerResults))")
-                    SummaryCard(title: "AI Unknown", value: "\(aiCount(.unknown, in: f.analyzerResults))")
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                GroupBox("Forensic Artifacts") {
-                    HStack(spacing: 10) {
-                        Button("Open Recovered URLs") {
-                            openIfExists(path: pathInRun(run.outputRoot, "URLs/URLs.html"))
-                        }
-                        .disabled(!fileExists(pathInRun(run.outputRoot, "URLs/URLs.html")))
-
-                        Button("Open All Text") {
-                            openIfExists(path: pathInRun(run.outputRoot, "txt/All The Text.txt"))
-                        }
-                        .disabled(!fileExists(pathInRun(run.outputRoot, "txt/All The Text.txt")))
-
-                        Button("Open Run Report") {
-                            openIfExists(path: pathInRun(run.outputRoot, "index.html"))
-                        }
-                        .disabled(!fileExists(pathInRun(run.outputRoot, "index.html")))
-
-                        Button("Open Hash Candidates") {
-                            openIfExists(path: pathInRun(run.outputRoot, "hash_candidates/hashcat_candidates.txt"))
-                        }
-                        .disabled(!fileExists(pathInRun(run.outputRoot, "hash_candidates/hashcat_candidates.txt")))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Forensic Summary").font(.title3.bold())
+                if let run = vm.activeRun {
+                    let f = run.forensic
+                    let metrics = f.metrics ?? [:]
+                    HStack {
+                        SummaryCard(title: ".REM Files", value: "\(f.remCount)")
+                        SummaryCard(title: "Media Recovered", value: "\(f.mediaCount)")
+                        SummaryCard(title: "Possible Decryptable DBs", value: "\(f.possibleDecryptableDBs)")
+                        SummaryCard(title: "Nested Archives", value: "\(f.nestedArchives)")
                     }
-                    .buttonStyle(.bordered)
-                }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                GroupBox("Keys Found") {
-                    if f.keyFiles.isEmpty { Text("None").foregroundStyle(.secondary) }
-                    else { ForEach(f.keyFiles, id: \.self) { Text($0).lineLimit(1) } }
-                }
-
-                GroupBox("AI Reason Tags") {
-                    let tags = topReasonTags(in: f.analyzerResults)
-                    if tags.isEmpty {
-                        Text("No reason tags yet.").foregroundStyle(.secondary)
-                    } else {
-                        FlowTagView(tags: tags)
+                    HStack {
+                        SummaryCard(title: "Decryptable Signals", value: "\(metrics["decryptable"] ?? 0)")
+                        SummaryCard(title: "Thumbnails", value: "\(metrics["thumbnails"] ?? 0)")
+                        SummaryCard(title: "Message Signals", value: "\(metrics["messages"] ?? 0)")
+                        SummaryCard(title: "Keys", value: "\(max(metrics["keys"] ?? 0, f.keyFiles.count))")
                     }
-                }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                GroupBox("Analyzer Outputs") {
-                    if f.analyzerResults.isEmpty {
-                        Text("No analyzer results yet.").foregroundStyle(.secondary)
-                    } else {
-                        ForEach(f.analyzerResults, id: \.sourcePath) { r in
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text(URL(fileURLWithPath: r.sourcePath).lastPathComponent).bold()
-                                    Spacer()
-                                    Text(r.nsfwSeverity.rawValue.capitalized)
-                                        .font(.caption.weight(.semibold))
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 3)
-                                        .background(Capsule().fill(r.nsfwSeverity == .explicit ? Color.red.opacity(0.2) : Color.orange.opacity(0.2)))
-                                }
-                                HStack(spacing: 12) {
-                                    Text(String(format: "Score %.2f", r.nsfwScore))
-                                    Text("Reasons: \(r.reasonDetections?.count ?? 0)")
-                                    Text("Media: \(r.carvedMediaCount)")
-                                    if r.sqliteHeaderDetected { Text("SQLite").foregroundStyle(.green) }
-                                    if let h = r.heatmapPath {
-                                        Button("Heatmap") { NSWorkspace.shared.open(URL(fileURLWithPath: h)) }
-                                    }
-                                    if let p = r.stringsPath {
-                                        Button("Strings") { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
-                                    }
-                                }
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                    HStack {
+                        SummaryCard(title: "Emails", value: "\(metrics["emails"] ?? 0)")
+                        SummaryCard(title: "URLs", value: "\(metrics["urls"] ?? 0)")
+                        SummaryCard(title: "Phones", value: "\(metrics["phones"] ?? 0)")
+                        SummaryCard(title: "Language Text", value: "\(metrics["language_signals"] ?? 0)")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    HStack {
+                        SummaryCard(title: "Hash Candidates", value: "\(metrics["hash_candidates"] ?? 0)")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    HStack {
+                        SummaryCard(title: "AI Safe", value: "\(aiCount(.none, in: f.analyzerResults))")
+                        SummaryCard(title: "AI Suggestive", value: "\(aiCount(.suggestive, in: f.analyzerResults))")
+                        SummaryCard(title: "AI Explicit", value: "\(aiCount(.explicit, in: f.analyzerResults))")
+                        SummaryCard(title: "AI Unknown", value: "\(aiCount(.unknown, in: f.analyzerResults))")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    GroupBox("Forensic Artifacts") {
+                        HStack(spacing: 10) {
+                            Button("Open Recovered URLs") {
+                                openIfExists(path: pathInRun(run.outputRoot, "URLs/URLs.html"))
                             }
-                            .padding(.vertical, 2)
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "URLs/URLs.html")))
+
+                            Button("Open All Text") {
+                                openIfExists(path: pathInRun(run.outputRoot, "txt/All The Text.txt"))
+                            }
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "txt/All The Text.txt")))
+
+                            Button("Open Run Report") {
+                                openIfExists(path: pathInRun(run.outputRoot, "index.html"))
+                            }
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "index.html")))
+
+                            Button("Open Hash Candidates") {
+                                openIfExists(path: pathInRun(run.outputRoot, "hash_candidates/hashcat_candidates.txt"))
+                            }
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "hash_candidates/hashcat_candidates.txt")))
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    GroupBox("Keys Found") {
+                        if f.keyFiles.isEmpty { Text("None").foregroundStyle(.secondary) }
+                        else { ForEach(f.keyFiles, id: \.self) { Text($0).lineLimit(1) } }
+                    }
+
+                    GroupBox("AI Reason Tags") {
+                        let tags = topReasonTags(in: f.analyzerResults)
+                        if tags.isEmpty {
+                            Text("No reason tags yet.").foregroundStyle(.secondary)
+                        } else {
+                            FlowTagView(tags: tags)
                         }
                     }
+
+                    GroupBox("Analyzer Outputs") {
+                        if f.analyzerResults.isEmpty {
+                            Text("No analyzer results yet.").foregroundStyle(.secondary)
+                        } else {
+                            ForEach(f.analyzerResults, id: \.sourcePath) { r in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Text(URL(fileURLWithPath: r.sourcePath).lastPathComponent).bold()
+                                        Spacer()
+                                        Text(r.nsfwSeverity.rawValue.capitalized)
+                                            .font(.caption.weight(.semibold))
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 3)
+                                            .background(Capsule().fill(r.nsfwSeverity == .explicit ? Color.red.opacity(0.2) : Color.orange.opacity(0.2)))
+                                    }
+                                    HStack(spacing: 12) {
+                                        Text(String(format: "Score %.2f", r.nsfwScore))
+                                        Text("Reasons: \(r.reasonDetections?.count ?? 0)")
+                                        Text("Media: \(r.carvedMediaCount)")
+                                        if r.sqliteHeaderDetected { Text("SQLite").foregroundStyle(.green) }
+                                        if let h = r.heatmapPath {
+                                            Button("Heatmap") { NSWorkspace.shared.open(URL(fileURLWithPath: h)) }
+                                        }
+                                        if let p = r.stringsPath {
+                                            Button("Strings") { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
+                                        }
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        }
+                    }
+                } else {
+                    Text("Run a scan to see forensic summaries.").foregroundStyle(.secondary)
                 }
-            } else {
-                Text("Run a scan to see forensic summaries.").foregroundStyle(.secondary)
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical)
         }
         .cardSurface()
-        .padding(.vertical)
     }
 
     private func aiCount(_ severity: NSFWSeverity, in results: [AnalyzerResult]) -> Int {
