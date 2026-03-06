@@ -625,15 +625,11 @@ private struct PreviewView: View {
         let declaredExt = item.fileExtension.lowercased()
         let declaredType = item.detectedType.lowercased()
         let htmlCandidate = data.prefix(256_000)
-        if (htmlExts.contains(ext) || htmlExts.contains(declaredExt) || declaredType == "html" || looksLikeHTML(data: htmlCandidate)) {
-            if htmlExts.contains(ext) || htmlExts.contains(declaredExt) || declaredType == "html" {
-                await MainActor.run { self.htmlPreview = .file(url) }
-                return
-            }
-            if let html = decodeText(data: htmlCandidate) {
-                await MainActor.run { self.htmlPreview = .inline(html: html, baseURL: url.deletingLastPathComponent()) }
-                return
-            }
+        if (htmlExts.contains(ext) || htmlExts.contains(declaredExt) || declaredType == "html" || looksLikeHTML(data: htmlCandidate)),
+           let decoded = decodeText(data: htmlCandidate) {
+            let rendered = wrapHTMLForPreview(decoded)
+            await MainActor.run { self.htmlPreview = .inline(html: rendered, baseURL: url.deletingLastPathComponent()) }
+            return
         }
 
         let videoExts: Set<String> = ["mp4", "mov", "mkv", "avi", "webm", "mpeg", "m2ts"]
@@ -765,6 +761,33 @@ private struct PreviewView: View {
             || text.contains("<html")
             || text.contains("<head")
             || text.contains("<body")
+    }
+
+    private func wrapHTMLForPreview(_ html: String) -> String {
+        let lower = html.lowercased()
+        if lower.contains("<html") {
+            return html
+        }
+        return """
+        <!doctype html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <style>
+        :root { color-scheme: light; }
+        body { background: #ffffff; color: #111111; font: 13px -apple-system, BlinkMacSystemFont, sans-serif; margin: 12px; white-space: pre-wrap; }
+        </style>
+        </head>
+        <body>\(escapeForHTML(html))</body>
+        </html>
+        """
+    }
+
+    private func escapeForHTML(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
     }
 
     private func previewCandidatePaths() -> [String] {
