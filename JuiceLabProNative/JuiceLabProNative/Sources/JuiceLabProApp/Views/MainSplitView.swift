@@ -66,20 +66,40 @@ private struct SidebarView: View {
     @EnvironmentObject private var vm: AppViewModel
 
     var body: some View {
-        List(selection: $vm.route) {
-            Section("Navigate") {
-                ForEach(AppViewModel.Route.allCases, id: \.self) { route in
-                    Label(route.rawValue, systemImage: icon(for: route)).tag(route)
-                }
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: 28, height: 28)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(AppTheme.primary.opacity(0.45), lineWidth: 1)
+                    )
+                Text("JuiceLabPro")
+                    .font(.headline.weight(.semibold))
+                Spacer()
             }
-            Section("Run History") {
-                ForEach(vm.runs) { run in
-                    VStack(alignment: .leading) {
-                        Text(run.name).bold().lineLimit(1)
-                        Text("\(run.items.count) items").font(.caption).foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.top, 4)
+
+            List(selection: $vm.route) {
+                Section("Navigate") {
+                    ForEach(AppViewModel.Route.allCases, id: \.self) { route in
+                        Label(route.rawValue, systemImage: icon(for: route)).tag(route)
                     }
-                    .tag(run.id)
-                    .onTapGesture { vm.selectedRunID = run.id }
+                }
+                Section("Run History") {
+                    ForEach(vm.runs) { run in
+                        VStack(alignment: .leading) {
+                            Text(run.name).bold().lineLimit(1)
+                            Text("\(run.items.count) items").font(.caption).foregroundStyle(.secondary)
+                        }
+                        .tag(run.id)
+                        .onTapGesture { vm.selectedRunID = run.id }
+                    }
                 }
             }
         }
