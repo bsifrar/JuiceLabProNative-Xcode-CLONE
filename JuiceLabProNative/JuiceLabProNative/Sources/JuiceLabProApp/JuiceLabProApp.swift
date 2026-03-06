@@ -29,6 +29,7 @@ private struct StartupHostView: View {
     @State private var progress: Double = 0.0
     @State private var statusText = "Initializing workspace…"
     @State private var spin = false
+    @State private var pulse = false
     private let hasSplashAsset = NSImage(named: "JuiceLabPro_splash") != nil
 
     private enum BootPhase {
@@ -52,12 +53,38 @@ private struct StartupHostView: View {
 
                     VStack(spacing: 20) {
                         if hasSplashAsset {
-                            Image("JuiceLabPro_splash")
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 260, height: 260)
-                                .rotationEffect(.degrees(spin ? 360 : 0))
-                                .animation(.linear(duration: 22).repeatForever(autoreverses: false), value: spin)
+                            ZStack {
+                                Circle()
+                                    .stroke(
+                                        AngularGradient(
+                                            colors: [
+                                                AppTheme.primary.opacity(0.0),
+                                                AppTheme.primary.opacity(0.9),
+                                                Color.cyan.opacity(0.8),
+                                                AppTheme.primary.opacity(0.0)
+                                            ],
+                                            center: .center
+                                        ),
+                                        lineWidth: 5
+                                    )
+                                    .frame(width: 250, height: 250)
+                                    .rotationEffect(.degrees(spin ? 360 : 0))
+                                    .blur(radius: 0.5)
+
+                                Circle()
+                                    .stroke(AppTheme.primary.opacity(0.22), lineWidth: 1.5)
+                                    .frame(width: 266, height: 266)
+                                    .scaleEffect(pulse ? 1.04 : 0.96)
+                                    .opacity(pulse ? 0.75 : 0.35)
+
+                                Image("JuiceLabPro_splash")
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 260, height: 260)
+                                    .scaleEffect(pulse ? 1.015 : 0.985)
+                            }
+                            .animation(.linear(duration: 16).repeatForever(autoreverses: false), value: spin)
+                            .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: pulse)
                         } else {
                             ZStack {
                                 Circle()
@@ -93,6 +120,7 @@ private struct StartupHostView: View {
                 }
                 .task {
                     spin = true
+                    pulse = true
                     await runStartupSequence()
                 }
             }
