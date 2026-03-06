@@ -634,6 +634,11 @@ private struct ForensicDashboardView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack {
+                    SummaryCard(title: "Hash Candidates", value: "\(metrics["hash_candidates"] ?? 0)")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack {
                     SummaryCard(title: "AI Safe", value: "\(aiCount(.none, in: f.analyzerResults))")
                     SummaryCard(title: "AI Suggestive", value: "\(aiCount(.suggestive, in: f.analyzerResults))")
                     SummaryCard(title: "AI Explicit", value: "\(aiCount(.explicit, in: f.analyzerResults))")
@@ -657,6 +662,11 @@ private struct ForensicDashboardView: View {
                             openIfExists(path: pathInRun(run.outputRoot, "index.html"))
                         }
                         .disabled(!fileExists(pathInRun(run.outputRoot, "index.html")))
+
+                        Button("Open Hash Candidates") {
+                            openIfExists(path: pathInRun(run.outputRoot, "hash_candidates/hashcat_candidates.txt"))
+                        }
+                        .disabled(!fileExists(pathInRun(run.outputRoot, "hash_candidates/hashcat_candidates.txt")))
                     }
                     .buttonStyle(.bordered)
                 }

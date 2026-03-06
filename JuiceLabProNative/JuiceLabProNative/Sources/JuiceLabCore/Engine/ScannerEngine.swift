@@ -311,6 +311,7 @@ public actor ScannerEngine {
         _ = generateBinaryStringArtifacts(for: &updated, at: runRoot)
         _ = generateURLArtifacts(for: &updated, at: runRoot)
         _ = generateAllTextArtifact(for: &updated, at: runRoot)
+        _ = generateHashCandidateArtifacts(for: &updated, at: runRoot)
         _ = generateRunIndexHTML(for: updated, at: runRoot)
         _ = try generateHeatmaps(for: &updated, at: runRoot)
 
@@ -1543,6 +1544,68 @@ public actor ScannerEngine {
         do {
             try output.write(to: txtDir.appendingPathComponent("All The Text.txt"), atomically: true, encoding: .utf8)
             return sections.count
+        } catch {
+            return 0
+        }
+    }
+
+    private func generateHashCandidateArtifacts(for run: inout ScanRun, at runRoot: URL) -> Int {
+        let outDir = runRoot.appendingPathComponent("hash_candidates", isDirectory: true)
+        try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        var candidates = collectTextArtifactCandidates(run: run)
+        let extraExts: Set<String> = ["txt", "log", "json", "xml", "db", "sqlite", "sqlite3", "plist", "bplist", "dat", "bin"]
+        for item in run.items where extraExts.contains(item.fileExtension.lowercased()) || item.category == .uncertain {
+            candidates.append(URL(fileURLWithPath: item.outputPath ?? item.sourcePath))
+        }
+
+        let patterns: [(label: String, mode: String, regex: NSRegularExpression?)] = [
+            ("bcrypt", "3200", try? NSRegularExpression(pattern: #"\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}"#, options: [])),
+            ("sha256", "1400", try? NSRegularExpression(pattern: #"\b[a-fA-F0-9]{64}\b"#, options: [])),
+            ("sha1", "100", try? NSRegularExpression(pattern: #"\b[a-fA-F0-9]{40}\b"#, options: [])),
+            ("md5_or_ntlm", "0_or_1000", try? NSRegularExpression(pattern: #"\b[a-fA-F0-9]{32}\b"#, options: [])),
+            ("ntlmv2_or_netntlm", "5600_family", try? NSRegularExpression(pattern: #"[A-Za-z0-9._-]{1,64}::[A-Za-z0-9._-]{1,64}:[a-fA-F0-9]{16,}:[a-fA-F0-9]{16,}"#, options: []))
+        ]
+
+        var unique = Set<String>()
+        var rows: [(kind: String, mode: String, value: String)] = []
+        let maxFiles = 800
+        let maxBytesPerFile = 2 * 1_048_576
+        var scanned = 0
+
+        for fileURL in dedupeURLs(candidates) where scanned < maxFiles {
+            guard let text = readTextSample(from: fileURL, maxBytes: maxBytesPerFile), !text.isEmpty else { continue }
+            scanned += 1
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            for pattern in patterns {
+                guard let regex = pattern.regex else { continue }
+                regex.enumerateMatches(in: text, options: [], range: range) { match, _, _ in
+                    guard let match, let r = Range(match.range, in: text) else { return }
+                    let value = String(text[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if value.count < 16 || unique.contains(value) { return }
+                    unique.insert(value)
+                    rows.append((kind: pattern.label, mode: pattern.mode, value: value))
+                }
+            }
+        }
+
+        guard !rows.isEmpty else { return 0 }
+
+        rows.sort { lhs, rhs in
+            if lhs.kind == rhs.kind { return lhs.value < rhs.value }
+            return lhs.kind < rhs.kind
+        }
+
+        let txt = rows.map { "\($0.value)  # kind=\($0.kind) mode_hint=\($0.mode)" }.joined(separator: "\n")
+        let jsonLines = rows.map { #"{"kind":"\#($0.kind)","mode_hint":"\#($0.mode)","hash":"\#($0.value)"}"# }.joined(separator: "\n")
+
+        do {
+            try txt.write(to: outDir.appendingPathComponent("hashcat_candidates.txt"), atomically: true, encoding: .utf8)
+            try jsonLines.write(to: outDir.appendingPathComponent("hashcat_candidates.jsonl"), atomically: true, encoding: .utf8)
+            var metrics = run.forensic.metrics ?? [:]
+            metrics["hash_candidates"] = rows.count
+            run.forensic.metrics = metrics
+            return rows.count
         } catch {
             return 0
         }
