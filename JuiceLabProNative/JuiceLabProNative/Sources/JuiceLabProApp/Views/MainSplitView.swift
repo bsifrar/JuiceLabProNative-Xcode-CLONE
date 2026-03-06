@@ -540,6 +540,7 @@ private struct PreviewView: View {
 
     @State private var nsImage: NSImage?
     @State private var previewText: String = ""
+    @State private var htmlRawText: String = ""
     @State private var pdfDocument: PDFDocument?
     @State private var avPlayer: AVPlayer?
     @State private var htmlPreview: HTMLPreviewContent?
@@ -547,7 +548,21 @@ private struct PreviewView: View {
     var body: some View {
         ZStack {
             if let html = htmlPreview {
-                HTMLPreviewView(content: html)
+                VStack(spacing: 8) {
+                    HTMLPreviewView(content: html)
+                        .frame(minHeight: 220)
+                    if !htmlRawText.isEmpty {
+                        Divider()
+                        ScrollView {
+                            Text(htmlRawText)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(6)
+                        }
+                        .frame(minHeight: 90, maxHeight: 180)
+                    }
+                }
             } else if let doc = pdfDocument {
                 PDFKitView(document: doc)
             } else if let player = avPlayer {
@@ -572,6 +587,7 @@ private struct PreviewView: View {
         await MainActor.run {
             self.nsImage = nil
             self.previewText = ""
+            self.htmlRawText = ""
             self.pdfDocument = nil
             self.avPlayer = nil
             self.htmlPreview = nil
@@ -628,7 +644,10 @@ private struct PreviewView: View {
         if (htmlExts.contains(ext) || htmlExts.contains(declaredExt) || declaredType == "html" || looksLikeHTML(data: htmlCandidate)),
            let decoded = decodeText(data: htmlCandidate) {
             let rendered = wrapHTMLForPreview(decoded)
-            await MainActor.run { self.htmlPreview = .inline(html: rendered, baseURL: url.deletingLastPathComponent()) }
+            await MainActor.run {
+                self.htmlPreview = .inline(html: rendered, baseURL: url.deletingLastPathComponent())
+                self.htmlRawText = decoded
+            }
             return
         }
 
