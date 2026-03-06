@@ -140,21 +140,21 @@ private struct ToolbarView: View {
                 Button("Stop") { vm.stopScan() }
                     .disabled(!vm.isScanning)
 
-                Button("Reveal Run Folder") {
-                    if let run = vm.activeRun {
-                        let url = URL(fileURLWithPath: run.outputRoot)
-                        NSWorkspace.shared.open(url)
-                    } else {
-                        let url = URL(fileURLWithPath: vm.settings.outputFolder)
-                        NSWorkspace.shared.open(url)
+                Menu("More") {
+                    Button("Reveal Run Folder") {
+                        if let run = vm.activeRun {
+                            let url = URL(fileURLWithPath: run.outputRoot)
+                            NSWorkspace.shared.open(url)
+                        } else {
+                            let url = URL(fileURLWithPath: vm.settings.outputFolder)
+                            NSWorkspace.shared.open(url)
+                        }
                     }
+                    Button("Clear Results", role: .destructive) {
+                        showClearResultsDialog = true
+                    }
+                    .disabled(vm.isScanning || vm.runs.isEmpty)
                 }
-
-                Button("Clear Results") {
-                    showClearResultsDialog = true
-                }
-                .disabled(vm.isScanning || vm.runs.isEmpty)
-                .foregroundStyle(.red)
             }
         }
         .confirmationDialog("Clear all results and run history?", isPresented: $showClearResultsDialog, titleVisibility: .visible) {
@@ -251,6 +251,9 @@ private struct DropAndStatsView: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
+                let normalizedProgress = vm.progress.totalBytes == 0 ? 0 : min(1, max(0, Double(vm.progress.bytesScanned) / Double(vm.progress.totalBytes)))
+                ScanRadarView(progress: normalizedProgress, isScanning: vm.isScanning)
+                    .frame(maxWidth: .infinity, minHeight: 170, maxHeight: 170)
                 Text("Scanned: \(ByteCountFormatter.string(fromByteCount: vm.progress.bytesScanned, countStyle: .file))")
                 Text(String(format: "%.1f MB/s", vm.progress.mbPerSecond))
                 Text("ETA: \(Int(vm.progress.etaSeconds))s")
@@ -294,6 +297,7 @@ private struct DropAndStatsView: View {
 private struct ResultsTableView: View {
     @EnvironmentObject private var vm: AppViewModel
     let items: [FoundItem]
+    @State private var sortedItems: [FoundItem] = []
     @State private var sortOrder: [KeyPathComparator<FoundItem>] = [
         .init(\.detectedType, order: .forward)
     ]
@@ -320,10 +324,10 @@ private struct ResultsTableView: View {
     }
 
     private var resultsTable: some View {
-        Table(items, selection: Binding(
+        Table(sortedItems, selection: Binding(
             get: { vm.selectedItem?.id },
             set: { selectedID in
-                vm.selectedItem = items.first(where: { $0.id == selectedID })
+                vm.selectedItem = sortedItems.first(where: { $0.id == selectedID })
             })
         , sortOrder: $sortOrder
         ) {
@@ -343,6 +347,15 @@ private struct ResultsTableView: View {
                 Text(ByteCountFormatter.string(fromByteCount: Int64(item.length), countStyle: .file))
             }
         }
+        .onAppear { applySort() }
+        .onChange(of: items) { _, _ in applySort() }
+        .onChange(of: sortOrder) { _, _ in applySort() }
+    }
+
+    private func applySort() {
+        var copy = items
+        copy.sort(using: sortOrder)
+        sortedItems = copy
     }
 }
 
@@ -1003,6 +1016,98 @@ private struct SummaryCard: View {
         }
             .frame(width: 180, height: 80)
             .forensicSummaryCardStyle()
+    }
+}
+
+private struct ScanRadarView: View {
+    let progress: Double
+    let isScanning: Bool
+
+    @State private var sweepDegrees: Double = 0
+    @State private var glowOpacity: Double = 0.55
+
+    private var percentLabel: String {
+        "\(Int((progress * 100).rounded()))%"
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let size = min(geo.size.width, geo.size.height)
+            let ringLine = max(3, size * 0.02)
+            let innerSize = size * 0.50
+            let sweepRotation = sweepDegrees - 100
+
+            ZStack {
+                Circle()
+                    .stroke(AppTheme.primary.opacity(0.14), lineWidth: ringLine)
+
+                Circle()
+                    .stroke(
+                        LinearGradient(
+                            colors: [AppTheme.primary.opacity(0.22), AppTheme.primary.opacity(0.03)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: ringLine * 2.5
+                    )
+                    .blur(radius: 1)
+
+                RadarSweepShape(startAngle: .degrees(-24), endAngle: .degrees(44))
+                    .fill(
+                        LinearGradient(
+                            colors: [AppTheme.primary.opacity(0.05), AppTheme.primary.opacity(0.35)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .rotationEffect(.degrees(sweepRotation))
+                    .opacity(isScanning ? glowOpacity : 0.2)
+
+                Circle()
+                    .stroke(AppTheme.primary.opacity(0.85), lineWidth: ringLine)
+                    .frame(width: innerSize, height: innerSize)
+
+                Text(percentLabel)
+                    .font(.system(size: size * 0.17, weight: .bold, design: .rounded))
+                    .foregroundStyle(AppTheme.primary)
+            }
+            .frame(width: size, height: size)
+            .shadow(color: AppTheme.primary.opacity(0.20), radius: 12, x: 0, y: 0)
+        }
+        .onAppear { updateAnimation() }
+        .onChange(of: isScanning) { _, _ in
+            updateAnimation()
+        }
+    }
+
+    private func updateAnimation() {
+        if isScanning {
+            sweepDegrees = 0
+            withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) {
+                sweepDegrees = 360
+            }
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                glowOpacity = 0.92
+            }
+        } else {
+            sweepDegrees = 0
+            glowOpacity = 0.35
+        }
+    }
+}
+
+private struct RadarSweepShape: Shape {
+    var startAngle: Angle
+    var endAngle: Angle
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let radius = min(rect.width, rect.height) / 2
+        path.move(to: center)
+        path.addArc(center: center, radius: radius, startAngle: startAngle, endAngle: endAngle, clockwise: false)
+        path.closeSubpath()
+        return path
     }
 }
 
