@@ -352,6 +352,7 @@ private struct ResultsTableView: View {
     @State private var sortOrder: [KeyPathComparator<FoundItem>] = [
         .init(\.detectedType, order: .forward)
     ]
+    @State private var quickFilter: MediaQuickFilter = .all
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -369,16 +370,36 @@ private struct ResultsTableView: View {
                     }
                 }
             }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(MediaQuickFilter.allCases, id: \.self) { filter in
+                        let active = quickFilter == filter
+                        Text(filter.rawValue)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule()
+                                    .fill(active ? AppTheme.primary.opacity(0.28) : Color.gray.opacity(0.14))
+                            )
+                            .overlay(
+                                Capsule()
+                                    .stroke(active ? AppTheme.primary.opacity(0.8) : Color.clear, lineWidth: 1)
+                            )
+                            .onTapGesture { quickFilter = filter }
+                    }
+                }
+            }
             resultsTable
         }
         .cardSurface()
     }
 
     private var resultsTable: some View {
-        Table(sortedItems, selection: Binding(
+        Table(filteredSortedItems, selection: Binding(
             get: { vm.selectedItem?.id },
             set: { selectedID in
-                vm.selectedItem = sortedItems.first(where: { $0.id == selectedID })
+                vm.selectedItem = filteredSortedItems.first(where: { $0.id == selectedID })
             })
         , sortOrder: $sortOrder
         ) {
@@ -408,11 +429,43 @@ private struct ResultsTableView: View {
         .onChange(of: sortOrder) { _, _ in applySort() }
     }
 
+    private var filteredSortedItems: [FoundItem] {
+        let severityByPath: [String: NSFWSeverity] = Dictionary(
+            uniqueKeysWithValues: (vm.activeRun?.forensic.analyzerResults ?? []).map { ($0.sourcePath, $0.nsfwSeverity) }
+        )
+
+        return sortedItems.filter { item in
+            switch quickFilter {
+            case .all:
+                return true
+            case .images:
+                return item.category == .images
+            case .video:
+                return item.category == .video
+            case .gif:
+                return item.fileExtension.lowercased() == "gif" || item.detectedType.lowercased() == "gif"
+            case .explicit:
+                return severityByPath[item.sourcePath] == .explicit
+            case .suggestive:
+                return severityByPath[item.sourcePath] == .suggestive
+            }
+        }
+    }
+
     private func applySort() {
         var copy = items
         copy.sort(using: sortOrder)
         sortedItems = copy
     }
+}
+
+private enum MediaQuickFilter: String, CaseIterable {
+    case all = "All"
+    case images = "Images"
+    case video = "Video"
+    case gif = "GIF"
+    case suggestive = "Suggestive"
+    case explicit = "Explicit"
 }
 
 private extension FoundItem {
@@ -592,6 +645,21 @@ private struct PreviewView: View {
             }
         }
 
+        let plistExts: Set<String> = ["plist", "bplist"]
+        if plistExts.contains(ext),
+           let obj = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+           let pretty = prettyPrintPropertyList(obj) {
+            await MainActor.run { self.previewText = pretty }
+            return
+        }
+
+        if let strings = extractPrintableStrings(from: data.prefix(64_000), minRunLength: 4),
+           !strings.isEmpty {
+            let header = "Extracted strings preview:\n\n"
+            await MainActor.run { self.previewText = header + strings }
+            return
+        }
+
         // Fallback: hex dump of the first up to 4KB
         let sample = data.prefix(4096)
         var lines: [String] = []
@@ -604,6 +672,38 @@ private struct PreviewView: View {
             offset += 16
         }
         await MainActor.run { self.previewText = lines.joined(separator: "\n") }
+    }
+
+    private func extractPrintableStrings(from data: Data.SubSequence, minRunLength: Int) -> String? {
+        var lines: [String] = []
+        var run: [UInt8] = []
+
+        for b in data {
+            let isPrintable = (32...126).contains(Int(b)) || b == 9 || b == 10 || b == 13
+            if isPrintable {
+                run.append(b)
+            } else {
+                if run.count >= minRunLength, let s = String(bytes: run, encoding: .utf8) {
+                    lines.append(s)
+                }
+                run.removeAll(keepingCapacity: true)
+            }
+            if lines.count >= 220 { break }
+        }
+        if run.count >= minRunLength, let s = String(bytes: run, encoding: .utf8) {
+            lines.append(s)
+        }
+        guard !lines.isEmpty else { return nil }
+        return lines.joined(separator: "\n")
+    }
+
+    private func prettyPrintPropertyList(_ object: Any) -> String? {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else {
+            return String(describing: object)
+        }
+        return text
     }
 
     private func previewCandidatePaths() -> [String] {
@@ -804,6 +904,8 @@ private func revealInFinder(path: String) {
 
 private struct ForensicDashboardView: View {
     @EnvironmentObject private var vm: AppViewModel
+    @State private var showDedupedItems = false
+    @State private var showAnalyzerOutputs = false
 
     var body: some View {
         ScrollView {
@@ -950,53 +1052,53 @@ private struct ForensicDashboardView: View {
                         .buttonStyle(ActionButtonStyle())
                     }
 
-                    GroupBox("Deduped Items") {
-                        if run.dedupeRemoved.isEmpty {
-                            Text("No deduped items in this run.")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Exact duplicates removed: \(run.dedupeRemoved.count)")
-                                    .font(.subheadline.weight(.semibold))
-                                Text("Grouped by dedupe key so you can audit what was kept vs removed.")
-                                    .font(.caption)
+                    GroupBox {
+                        DisclosureGroup("Deduped Items (\(run.dedupeRemoved.count))", isExpanded: $showDedupedItems) {
+                            if run.dedupeRemoved.isEmpty {
+                                Text("No deduped items in this run.")
                                     .foregroundStyle(.secondary)
+                            } else {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Grouped by dedupe key so you can audit what was kept vs removed.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
 
-                                ScrollView {
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        ForEach(groupedDedupeRemovals(run.dedupeRemoved), id: \.dedupeKey) { group in
-                                            DisclosureGroup {
-                                                VStack(alignment: .leading, spacing: 6) {
-                                                    Text("Kept: \(group.keptPath)")
-                                                        .font(.caption)
-                                                        .textSelection(.enabled)
-                                                        .lineLimit(2)
-                                                        .truncationMode(.middle)
-                                                    ForEach(group.removedPaths, id: \.self) { removed in
-                                                        Text("Removed: \(removed)")
+                                    ScrollView {
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            ForEach(groupedDedupeRemovals(run.dedupeRemoved), id: \.dedupeKey) { group in
+                                                DisclosureGroup {
+                                                    VStack(alignment: .leading, spacing: 6) {
+                                                        Text("Kept: \(group.keptPath)")
                                                             .font(.caption)
-                                                            .foregroundStyle(.secondary)
                                                             .textSelection(.enabled)
                                                             .lineLimit(2)
                                                             .truncationMode(.middle)
+                                                        ForEach(group.removedPaths, id: \.self) { removed in
+                                                            Text("Removed: \(removed)")
+                                                                .font(.caption)
+                                                                .foregroundStyle(.secondary)
+                                                                .textSelection(.enabled)
+                                                                .lineLimit(2)
+                                                                .truncationMode(.middle)
+                                                        }
                                                     }
-                                                }
-                                                .padding(.top, 2)
-                                            } label: {
-                                                HStack {
-                                                    Text(URL(fileURLWithPath: group.keptPath).lastPathComponent)
-                                                        .lineLimit(1)
-                                                        .truncationMode(.middle)
-                                                    Spacer()
-                                                    Text("\(group.removedPaths.count) removed")
-                                                        .font(.caption.weight(.semibold))
-                                                        .foregroundStyle(.orange)
+                                                    .padding(.top, 2)
+                                                } label: {
+                                                    HStack {
+                                                        Text(URL(fileURLWithPath: group.keptPath).lastPathComponent)
+                                                            .lineLimit(1)
+                                                            .truncationMode(.middle)
+                                                        Spacer()
+                                                        Text("\(group.removedPaths.count) removed")
+                                                            .font(.caption.weight(.semibold))
+                                                            .foregroundStyle(.orange)
+                                                    }
                                                 }
                                             }
                                         }
                                     }
+                                    .frame(maxHeight: 220)
                                 }
-                                .frame(maxHeight: 220)
                             }
                         }
                     }
@@ -1015,37 +1117,39 @@ private struct ForensicDashboardView: View {
                         }
                     }
 
-                    GroupBox("Analyzer Outputs") {
-                        if f.analyzerResults.isEmpty {
-                            Text("No analyzer results yet.").foregroundStyle(.secondary)
-                        } else {
-                            ForEach(f.analyzerResults, id: \.sourcePath) { r in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack {
-                                        Text(URL(fileURLWithPath: r.sourcePath).lastPathComponent).bold()
-                                        Spacer()
-                                        Text(r.nsfwSeverity.rawValue.capitalized)
-                                            .font(.caption.weight(.semibold))
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 3)
-                                            .background(Capsule().fill(r.nsfwSeverity == .explicit ? Color.red.opacity(0.2) : Color.orange.opacity(0.2)))
-                                    }
-                                    HStack(spacing: 12) {
-                                        Text(String(format: "Score %.2f", r.nsfwScore))
-                                        Text("Reasons: \(r.reasonDetections?.count ?? 0)")
-                                        Text("Media: \(r.carvedMediaCount)")
-                                        if r.sqliteHeaderDetected { Text("SQLite").foregroundStyle(.green) }
-                                        if let h = r.heatmapPath {
-                                            Button("Heatmap") { NSWorkspace.shared.open(URL(fileURLWithPath: h)) }
+                    GroupBox {
+                        DisclosureGroup("Analyzer Outputs (\(f.analyzerResults.count))", isExpanded: $showAnalyzerOutputs) {
+                            if f.analyzerResults.isEmpty {
+                                Text("No analyzer results yet.").foregroundStyle(.secondary)
+                            } else {
+                                ForEach(f.analyzerResults, id: \.sourcePath) { r in
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        HStack {
+                                            Text(URL(fileURLWithPath: r.sourcePath).lastPathComponent).bold()
+                                            Spacer()
+                                            Text(r.nsfwSeverity.rawValue.capitalized)
+                                                .font(.caption.weight(.semibold))
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 3)
+                                                .background(Capsule().fill(r.nsfwSeverity == .explicit ? Color.red.opacity(0.2) : Color.orange.opacity(0.2)))
                                         }
-                                        if let p = r.stringsPath {
-                                            Button("Strings") { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
+                                        HStack(spacing: 12) {
+                                            Text(String(format: "Score %.2f", r.nsfwScore))
+                                            Text("Reasons: \(r.reasonDetections?.count ?? 0)")
+                                            Text("Media: \(r.carvedMediaCount)")
+                                            if r.sqliteHeaderDetected { Text("SQLite").foregroundStyle(.green) }
+                                            if let h = r.heatmapPath {
+                                                Button("Heatmap") { NSWorkspace.shared.open(URL(fileURLWithPath: h)) }
+                                            }
+                                            if let p = r.stringsPath {
+                                                Button("Strings") { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
+                                            }
                                         }
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
                                     }
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .padding(.vertical, 2)
                                 }
-                                .padding(.vertical, 2)
                             }
                         }
                     }

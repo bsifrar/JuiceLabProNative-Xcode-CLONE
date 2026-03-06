@@ -35,6 +35,9 @@ final class AppViewModel: ObservableObject {
 
     private let engine = ScannerEngine()
     private let history = RunHistoryStore()
+    private var contentSearchIndex: [UUID: String] = [:]
+    private var indexedRunID: UUID?
+    private var indexingTask: Task<Void, Never>?
 
     /// ✅ cancellation handle
     private var scanTask: Task<Void, Never>?
@@ -57,11 +60,11 @@ final class AppViewModel: ObservableObject {
     var filteredItems: [FoundItem] {
         guard let run = activeRun else { return [] }
         _ = itemTick // drive reevaluation
+        ensureSearchIndex(for: run)
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let filtered = run.items.filter { item in
             selectedCategories.contains(item.category) &&
-            (query.isEmpty ||
-             item.sourcePath.localizedCaseInsensitiveContains(query) ||
-             item.detectedType.localizedCaseInsensitiveContains(query))
+            (q.isEmpty || matchesQuery(item: item, query: q))
         }
         if filtered.count > maxVisibleItems {
             return Array(filtered.prefix(maxVisibleItems))
@@ -164,6 +167,7 @@ final class AppViewModel: ObservableObject {
             runs.insert(doneRun, at: 0)
             selectedRunID = doneRun.id
             try? await history.save(run: doneRun)
+            rebuildSearchIndex(for: doneRun)
             if doneRun.items.isEmpty {
                 statusMessage = "Scan completed with 0 items. Try enabling All types or adding a different source."
             } else if !doneRun.warnings.isEmpty {
@@ -249,6 +253,10 @@ final class AppViewModel: ObservableObject {
         selectedItem = nil
         progress = ScanProgress()
         statusMessage = "Results cleared."
+        contentSearchIndex.removeAll()
+        indexedRunID = nil
+        indexingTask?.cancel()
+        indexingTask = nil
 
         Task {
             try? await history.clear()
@@ -314,6 +322,111 @@ final class AppViewModel: ObservableObject {
         case "archive_extract": return "Archive Extraction"
         default: return raw.replacingOccurrences(of: "_", with: " ").capitalized
         }
+    }
+
+    private func matchesQuery(item: FoundItem, query: String) -> Bool {
+        if item.sourcePath.lowercased().contains(query) ||
+            item.detectedType.lowercased().contains(query) ||
+            item.fileExtension.lowercased().contains(query) {
+            return true
+        }
+        if let indexed = contentSearchIndex[item.id], indexed.contains(query) {
+            return true
+        }
+        return false
+    }
+
+    private func ensureSearchIndex(for run: ScanRun) {
+        guard indexedRunID != run.id, indexingTask == nil else { return }
+        rebuildSearchIndex(for: run)
+    }
+
+    private func rebuildSearchIndex(for run: ScanRun) {
+        indexingTask?.cancel()
+        indexedRunID = run.id
+        contentSearchIndex = [:]
+
+        indexingTask = Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            let analyzerByPath: [String: AnalyzerResult] = Dictionary(
+                uniqueKeysWithValues: run.forensic.analyzerResults.map { ($0.sourcePath, $0) }
+            )
+            var index: [UUID: String] = [:]
+            let maxCharsPerItem = 6000
+
+            for item in run.items {
+                if Task.isCancelled { return }
+                var fields: [String] = [
+                    item.sourcePath,
+                    item.detectedType,
+                    item.fileExtension,
+                    item.category.rawValue
+                ]
+
+                if let ar = analyzerByPath[item.sourcePath] {
+                    fields.append(ar.nsfwSeverity.rawValue)
+                    fields.append(String(ar.nsfwScore))
+                    for det in ar.reasonDetections ?? [] {
+                        fields.append(det.reason.rawValue)
+                        fields.append(det.modelLabel)
+                        if let notes = det.notes { fields.append(notes) }
+                    }
+                }
+
+                if let textSnippet = Self.readSearchableSnippet(for: item) {
+                    fields.append(textSnippet)
+                }
+
+                let merged = fields
+                    .joined(separator: " ")
+                    .lowercased()
+                index[item.id] = String(merged.prefix(maxCharsPerItem))
+            }
+
+            let builtIndex = index
+            await MainActor.run {
+                self.contentSearchIndex = builtIndex
+                self.itemTick &+= 1
+                self.indexingTask = nil
+            }
+        }
+    }
+
+    private nonisolated static func readSearchableSnippet(for item: FoundItem) -> String? {
+        let ext = item.fileExtension.lowercased()
+        let textish: Set<String> = [
+            "txt", "md", "rtf", "csv", "json", "xml", "html", "htm", "log",
+            "plist", "vcard", "vcf", "sql", "db", "sqlite", "sqlite3"
+        ]
+        guard textish.contains(ext) else { return nil }
+
+        let path = item.outputPath ?? item.sourcePath
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) else { return nil }
+        let chunk = data.prefix(80_000)
+
+        if let s = String(data: chunk, encoding: .utf8) ?? String(data: chunk, encoding: .ascii) {
+            return s
+        }
+
+        // Fallback for binary-ish text containers (db/plist cache): extract printable runs.
+        let bytes = [UInt8](chunk)
+        var out = ""
+        var cur = ""
+        for b in bytes {
+            if (32...126).contains(Int(b)) || b == 9 || b == 10 || b == 13 {
+                cur.append(Character(UnicodeScalar(Int(b))!))
+            } else {
+                if cur.count >= 4 {
+                    out.append(cur)
+                    out.append("\n")
+                }
+                cur.removeAll(keepingCapacity: true)
+            }
+        }
+        if cur.count >= 4 {
+            out.append(cur)
+        }
+        return out.isEmpty ? nil : out
     }
 }
 #endif
