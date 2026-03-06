@@ -19,5 +19,13 @@ struct JuiceLabProApp: App {
                 .frame(minWidth: 1200, minHeight: 760)
         }
         .windowStyle(.automatic)
+        .commands {
+            CommandMenu("JuiceLabPro") {
+                Button("Command Palette") {
+                    viewModel.commandPalettePresented = true
+                }
+                .keyboardShortcut("k", modifiers: [.command])
+            }
+        }
     }
 }

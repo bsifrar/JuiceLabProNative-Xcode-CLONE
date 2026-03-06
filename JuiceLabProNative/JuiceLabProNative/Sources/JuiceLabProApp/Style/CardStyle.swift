@@ -21,29 +21,24 @@ struct CardSurface: ViewModifier {
             .padding(14)
             .background(
                 RoundedRectangle(cornerRadius: 16)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                AppTheme.card.opacity(0.98),
-                                AppTheme.mutedBackground.opacity(0.92)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+                    .fill(.ultraThinMaterial)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(
-                                LinearGradient(
-                                    colors: [
-                                        AppTheme.primary.opacity(0.48),
-                                        Color.white.opacity(0.08)
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 1
-                            )
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(AppTheme.card.opacity(0.58))
+                            RoundedRectangle(cornerRadius: 16)
+                                .stroke(
+                                    LinearGradient(
+                                        colors: [
+                                            AppTheme.primary.opacity(0.44),
+                                            Color.white.opacity(0.10)
+                                        ],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ),
+                                    lineWidth: 1
+                                )
+                        }
                     )
             )
             .shadow(color: AppTheme.primary.opacity(0.22), radius: 14, x: 0, y: 8)

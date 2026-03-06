@@ -11,6 +11,7 @@ final class AppViewModel: ObservableObject {
     enum Route: String, CaseIterable {
         case runs = "Runs"
         case results = "Results"
+        case timeline = "Timeline"
         case forensic = "Forensic"
         case settings = "Settings"
     }
@@ -29,6 +30,7 @@ final class AppViewModel: ObservableObject {
     @Published var droppedURLs: [URL] = []
     @Published var statusMessage: String = ""
     @Published var stageMessage: String = ""
+    @Published var commandPalettePresented = false
 
     /// UI refresh signal (throttled)
     @Published private(set) var itemTick: Int = 0
@@ -36,6 +38,7 @@ final class AppViewModel: ObservableObject {
     private let engine = ScannerEngine()
     private let history = RunHistoryStore()
     private var contentSearchIndex: [UUID: String] = [:]
+    private var tokenSearchIndex: [String: Set<UUID>] = [:]
     private var indexedRunID: UUID?
     private var indexingTask: Task<Void, Never>?
 
@@ -62,9 +65,10 @@ final class AppViewModel: ObservableObject {
         _ = itemTick // drive reevaluation
         ensureSearchIndex(for: run)
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let queryCandidates = candidateItemIDs(for: q)
         let filtered = run.items.filter { item in
             selectedCategories.contains(item.category) &&
-            (q.isEmpty || matchesQuery(item: item, query: q))
+            (q.isEmpty || queryCandidates.contains(item.id) || matchesQuery(item: item, query: q))
         }
         if filtered.count > maxVisibleItems {
             return Array(filtered.prefix(maxVisibleItems))
@@ -254,6 +258,7 @@ final class AppViewModel: ObservableObject {
         progress = ScanProgress()
         statusMessage = "Results cleared."
         contentSearchIndex.removeAll()
+        tokenSearchIndex.removeAll()
         indexedRunID = nil
         indexingTask?.cancel()
         indexingTask = nil
@@ -345,6 +350,7 @@ final class AppViewModel: ObservableObject {
         indexingTask?.cancel()
         indexedRunID = run.id
         contentSearchIndex = [:]
+        tokenSearchIndex = [:]
 
         indexingTask = Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
@@ -352,6 +358,7 @@ final class AppViewModel: ObservableObject {
                 uniqueKeysWithValues: run.forensic.analyzerResults.map { ($0.sourcePath, $0) }
             )
             var index: [UUID: String] = [:]
+            var tokens: [String: Set<UUID>] = [:]
             let maxCharsPerItem = 6000
 
             for item in run.items {
@@ -380,16 +387,57 @@ final class AppViewModel: ObservableObject {
                 let merged = fields
                     .joined(separator: " ")
                     .lowercased()
-                index[item.id] = String(merged.prefix(maxCharsPerItem))
+                let truncated = String(merged.prefix(maxCharsPerItem))
+                index[item.id] = truncated
+
+                // Inverted index for fast term-based lookups on large runs.
+                let terms = Self.tokenize(truncated)
+                for term in terms {
+                    tokens[term, default: []].insert(item.id)
+                }
             }
 
             let builtIndex = index
+            let builtTokens = tokens
             await MainActor.run {
                 self.contentSearchIndex = builtIndex
+                self.tokenSearchIndex = builtTokens
                 self.itemTick &+= 1
                 self.indexingTask = nil
             }
         }
+    }
+
+    private nonisolated static func tokenize(_ text: String) -> Set<String> {
+        var out = Set<String>()
+        out.reserveCapacity(128)
+        for piece in text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
+            if piece.count < 3 { continue }
+            out.insert(String(piece.prefix(48)))
+            if out.count >= 300 { break }
+        }
+        return out
+    }
+
+    private func candidateItemIDs(for query: String) -> Set<UUID> {
+        guard !query.isEmpty else { return [] }
+        let terms = query
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map { String($0.lowercased()) }
+            .filter { $0.count >= 3 }
+        guard !terms.isEmpty else { return [] }
+
+        var running: Set<UUID>?
+        for term in terms {
+            guard let ids = tokenSearchIndex[term] else { return [] }
+            if let current = running {
+                running = current.intersection(ids)
+            } else {
+                running = ids
+            }
+            if running?.isEmpty == true { return [] }
+        }
+        return running ?? []
     }
 
     private nonisolated static func readSearchableSnippet(for item: FoundItem) -> String? {

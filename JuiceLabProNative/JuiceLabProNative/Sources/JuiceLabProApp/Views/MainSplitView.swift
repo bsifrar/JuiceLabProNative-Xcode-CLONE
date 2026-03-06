@@ -28,6 +28,8 @@ struct MainSplitView: View {
                 Group {
                     if vm.route == .settings {
                         SettingsPanelView()
+                    } else if vm.route == .timeline {
+                        TimelineView()
                     } else if vm.route == .forensic {
                         ForensicDashboardView()
                     } else {
@@ -60,6 +62,71 @@ struct MainSplitView: View {
         .tint(AppTheme.primary)
         .preferredColorScheme(.dark)
         .searchable(text: $vm.query, placement: .toolbar)
+        .sheet(isPresented: $vm.commandPalettePresented) {
+            CommandPaletteView(commands: commandPaletteCommands())
+                .environmentObject(vm)
+                .frame(minWidth: 560, minHeight: 420)
+        }
+    }
+
+    private func commandPaletteCommands() -> [CommandPaletteItem] {
+        [
+            CommandPaletteItem(title: "Start Scan", subtitle: "Run scanner on current sources", keywords: ["scan", "start"]) {
+                if vm.droppedURLs.isEmpty {
+                    pickSourcesForPalette()
+                } else {
+                    vm.startScan()
+                }
+            },
+            CommandPaletteItem(title: "Stop Scan", subtitle: "Stop active scan", keywords: ["scan", "stop"]) {
+                vm.stopScan()
+            },
+            CommandPaletteItem(title: "Add Sources", subtitle: "Choose files and folders", keywords: ["add", "source", "files"]) {
+                pickSourcesForPalette()
+            },
+            CommandPaletteItem(title: "Clear Sources", subtitle: "Remove all staged sources", keywords: ["clear", "source"]) {
+                vm.clearSources()
+            },
+            CommandPaletteItem(title: "Reveal Run Folder", subtitle: "Open current output in Finder", keywords: ["finder", "output", "folder"]) {
+                if let run = vm.activeRun {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: run.outputRoot))
+                } else {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: vm.settings.outputFolder))
+                }
+            },
+            CommandPaletteItem(title: "Open Results", subtitle: "Go to results workspace", keywords: ["results", "workspace"]) {
+                vm.route = .results
+            },
+            CommandPaletteItem(title: "Open Timeline", subtitle: "Go to timeline view", keywords: ["timeline", "events"]) {
+                vm.route = .timeline
+            },
+            CommandPaletteItem(title: "Open Forensic Summary", subtitle: "Go to forensic dashboard", keywords: ["forensic", "summary"]) {
+                vm.route = .forensic
+            },
+            CommandPaletteItem(title: "Open Settings", subtitle: "Go to settings", keywords: ["settings", "preferences"]) {
+                vm.route = .settings
+            },
+            CommandPaletteItem(title: "Run Agents", subtitle: "Generate forensic agent outputs", keywords: ["agents", "analysis"]) {
+                vm.runAgents()
+                vm.route = .forensic
+            },
+            CommandPaletteItem(title: "Run Recommended Actions", subtitle: "Execute agent recommended actions", keywords: ["actions", "recommended"]) {
+                vm.runRecommendedActions()
+                vm.route = .forensic
+            }
+        ]
+    }
+
+    private func pickSourcesForPalette() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.canCreateDirectories = false
+        panel.prompt = "Add"
+        if panel.runModal() == .OK {
+            vm.addSources(panel.urls)
+        }
     }
 }
 
@@ -110,6 +177,7 @@ private struct SidebarView: View {
         switch route {
         case .runs: return "clock.arrow.circlepath"
         case .results: return "tray.full"
+        case .timeline: return "clock"
         case .forensic: return "shield.lefthalf.filled"
         case .settings: return "gearshape"
         }
@@ -354,6 +422,9 @@ private struct ResultsTableView: View {
         .init(\.detectedType, order: .forward)
     ]
     @State private var quickFilter: MediaQuickFilter = .all
+    @State private var validationFilter: ValidationFacet = .all
+    @State private var minConfidence: Double = 0
+    @State private var sourceFolderFilter: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -390,6 +461,30 @@ private struct ResultsTableView: View {
                             .onTapGesture { quickFilter = filter }
                     }
                 }
+            }
+            HStack(spacing: 12) {
+                Picker("Validation", selection: $validationFilter) {
+                    ForEach(ValidationFacet.allCases, id: \.self) { facet in
+                        Text(facet.rawValue).tag(facet)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 150)
+
+                HStack(spacing: 6) {
+                    Text("Min confidence")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Slider(value: $minConfidence, in: 0...1, step: 0.05)
+                    Text("\(Int(minConfidence * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .frame(width: 44, alignment: .trailing)
+                }
+                .frame(maxWidth: 280)
+
+                TextField("Filter source folder…", text: $sourceFolderFilter)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 260)
             }
             resultsTable
         }
@@ -434,8 +529,18 @@ private struct ResultsTableView: View {
         let severityByPath: [String: NSFWSeverity] = Dictionary(
             uniqueKeysWithValues: (vm.activeRun?.forensic.analyzerResults ?? []).map { ($0.sourcePath, $0.nsfwSeverity) }
         )
+        let sourceNeedle = sourceFolderFilter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
         return sortedItems.filter { item in
+            if validationFilter != .all && item.validationStatus.rawValue != validationFilter.rawValue.lowercased() {
+                return false
+            }
+            if item.confidence < minConfidence {
+                return false
+            }
+            if !sourceNeedle.isEmpty && !item.sourceFolderPath.lowercased().contains(sourceNeedle) {
+                return false
+            }
             switch quickFilter {
             case .all:
                 return true
@@ -467,6 +572,13 @@ private enum MediaQuickFilter: String, CaseIterable {
     case gif = "GIF"
     case suggestive = "Suggestive"
     case explicit = "Explicit"
+}
+
+private enum ValidationFacet: String, CaseIterable {
+    case all = "All"
+    case valid = "Valid"
+    case partial = "Partial"
+    case uncertain = "Uncertain"
 }
 
 private extension FoundItem {
@@ -1516,6 +1628,147 @@ private struct RadarSweepShape: Shape {
         path.addArc(center: center, radius: radius, startAngle: startAngle, endAngle: endAngle, clockwise: false)
         path.closeSubpath()
         return path
+    }
+}
+
+private struct CommandPaletteItem: Identifiable {
+    let id = UUID()
+    let title: String
+    let subtitle: String
+    let keywords: [String]
+    let action: () -> Void
+}
+
+private struct CommandPaletteView: View {
+    @EnvironmentObject private var vm: AppViewModel
+    let commands: [CommandPaletteItem]
+    @State private var query = ""
+    @State private var selectedID: UUID?
+
+    private var filtered: [CommandPaletteItem] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return commands }
+        return commands.filter { cmd in
+            cmd.title.lowercased().contains(needle) ||
+            cmd.subtitle.lowercased().contains(needle) ||
+            cmd.keywords.contains(where: { $0.lowercased().contains(needle) })
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Type a command…", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 15, weight: .semibold))
+
+            List(filtered, selection: $selectedID) { command in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(command.title)
+                        .font(.headline)
+                    Text(command.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .tag(command.id)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    command.action()
+                    vm.commandPalettePresented = false
+                }
+            }
+            .onAppear {
+                selectedID = filtered.first?.id
+            }
+        }
+        .padding(14)
+        .cardSurface()
+        .onSubmit {
+            guard let selectedID,
+                  let command = filtered.first(where: { $0.id == selectedID }) else { return }
+            command.action()
+            vm.commandPalettePresented = false
+        }
+    }
+}
+
+private struct TimelineView: View {
+    @EnvironmentObject private var vm: AppViewModel
+
+    private struct TimelineEvent: Identifiable {
+        let id = UUID()
+        let date: Date
+        let title: String
+        let subtitle: String
+        let category: FileCategory
+    }
+
+    private var events: [TimelineEvent] {
+        guard let run = vm.activeRun else { return [] }
+        let fm = FileManager.default
+        let calendar = Calendar.current
+        var built: [TimelineEvent] = []
+        built.reserveCapacity(min(run.items.count, 1600))
+
+        for item in run.items.prefix(1600) {
+            let path = item.outputPath ?? item.sourcePath
+            let url = URL(fileURLWithPath: path)
+            let attrs = try? fm.attributesOfItem(atPath: path)
+            let date = (attrs?[.creationDate] as? Date)
+                ?? (attrs?[.modificationDate] as? Date)
+                ?? run.startedAt
+            let day = calendar.startOfDay(for: date)
+            built.append(
+                TimelineEvent(
+                    date: day,
+                    title: url.lastPathComponent,
+                    subtitle: item.detectedType.uppercased(),
+                    category: item.category
+                )
+            )
+        }
+
+        return built.sorted { $0.date > $1.date }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Forensic Timeline")
+                .font(.title2.bold())
+            if events.isEmpty {
+                Text("No timeline events yet. Run a scan and select this tab again.")
+                    .foregroundStyle(.secondary)
+            } else {
+                List(events) { event in
+                    HStack(alignment: .top, spacing: 10) {
+                        Circle()
+                            .fill(color(for: event.category))
+                            .frame(width: 10, height: 10)
+                            .padding(.top, 6)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(event.title).font(.subheadline.weight(.semibold))
+                            Text(event.subtitle).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(event.date, style: .date)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding()
+        .cardSurface()
+    }
+
+    private func color(for category: FileCategory) -> Color {
+        switch category {
+        case .images: return AppTheme.primary
+        case .video: return .orange
+        case .audio: return .green
+        case .text: return .yellow
+        case .archives: return .pink
+        case .uncertain: return .gray
+        }
     }
 }
 
