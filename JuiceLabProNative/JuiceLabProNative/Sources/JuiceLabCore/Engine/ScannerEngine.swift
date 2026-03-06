@@ -155,6 +155,7 @@ public actor ScannerEngine {
             run.completedAt = Date()
             return run
         }
+        let singleFileProgressMode = allFiles.count == 1
 
         let tempRoot = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent(runName, isDirectory: true)
@@ -196,6 +197,24 @@ public actor ScannerEngine {
                 for file in batch {
                     group.addTask { [stages] in
                         let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+                        let totalForUI = max(initialTotalBytes, 1)
+
+                        if singleFileProgressMode {
+                            var startProgress = ScanProgress(
+                                bytesScanned: min(max(size / 25, 1_024), size),
+                                totalBytes: totalForUI,
+                                currentFile: file.lastPathComponent
+                            )
+                            let elapsed = Date().timeIntervalSince(started)
+                            if elapsed > 0 {
+                                startProgress.mbPerSecond = (Double(startProgress.bytesScanned) / 1_048_576.0) / elapsed
+                                if startProgress.mbPerSecond > 0 {
+                                    let remainingMB = Double(max(startProgress.totalBytes - startProgress.bytesScanned, 0)) / 1_048_576.0
+                                    startProgress.etaSeconds = remainingMB / startProgress.mbPerSecond
+                                }
+                            }
+                            onProgress?(startProgress)
+                        }
 
                         if let capMB = settings.maxFileSizeMB {
                             let capBytes = Int64(capMB) * 1_048_576
@@ -209,7 +228,7 @@ public actor ScannerEngine {
                         let data = (try? Data(contentsOf: file, options: .mappedIfSafe)) ?? Data()
 
                         var combined = StageOutput()
-                        for stage in stages {
+                        for (index, stage) in stages.enumerated() {
                             if Task.isCancelled { break }
                             onStage?(file.lastPathComponent, stage.name)
                             let t0 = DispatchTime.now()
@@ -222,6 +241,25 @@ public actor ScannerEngine {
                             combined.forensicDelta.merge(o.forensicDelta)
                             if !o.analyzerResults.isEmpty { combined.analyzerResults.append(contentsOf: o.analyzerResults) }
                             if !o.extraFilesToScan.isEmpty { combined.extraFilesToScan.append(contentsOf: o.extraFilesToScan) }
+
+                            if singleFileProgressMode {
+                                let fraction = Double(index + 1) / Double(max(stages.count, 1))
+                                let estimatedBytes = Int64(Double(size) * fraction)
+                                var stageProgress = ScanProgress(
+                                    bytesScanned: estimatedBytes,
+                                    totalBytes: totalForUI,
+                                    currentFile: file.lastPathComponent
+                                )
+                                let elapsed = Date().timeIntervalSince(started)
+                                if elapsed > 0 {
+                                    stageProgress.mbPerSecond = (Double(stageProgress.bytesScanned) / 1_048_576.0) / elapsed
+                                    if stageProgress.mbPerSecond > 0 {
+                                        let remainingMB = Double(max(stageProgress.totalBytes - stageProgress.bytesScanned, 0)) / 1_048_576.0
+                                        stageProgress.etaSeconds = remainingMB / stageProgress.mbPerSecond
+                                    }
+                                }
+                                onProgress?(stageProgress)
+                            }
                         }
 
                         return (combined, size, file.lastPathComponent)
