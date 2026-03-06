@@ -795,6 +795,16 @@ private struct ForensicDashboardView: View {
                                 openIfExists(path: pathInRun(run.outputRoot, "evidence_intelligence/intelligence_report.md"))
                             }
                             .disabled(!fileExists(pathInRun(run.outputRoot, "evidence_intelligence/intelligence_report.md")))
+
+                            Button("Run Agents") {
+                                vm.runAgents()
+                            }
+                            .disabled(vm.isScanning || vm.isRunningAgents || run.outputRoot.isEmpty)
+
+                            Button("Open Agent Summary") {
+                                openIfExists(path: pathInRun(run.outputRoot, "evidence_intelligence/agents_summary.md"))
+                            }
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "evidence_intelligence/agents_summary.md")))
                         }
                         .buttonStyle(.bordered)
                     }

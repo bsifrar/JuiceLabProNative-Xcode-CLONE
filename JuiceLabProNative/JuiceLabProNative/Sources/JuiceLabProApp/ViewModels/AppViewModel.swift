@@ -24,6 +24,7 @@ final class AppViewModel: ObservableObject {
     @Published var selectedCategories = Set(FileCategory.allCases)
     @Published var progress = ScanProgress()
     @Published var isScanning = false
+    @Published var isRunningAgents = false
     @Published var droppedURLs: [URL] = []
     @Published var statusMessage: String = ""
     @Published var stageMessage: String = ""
@@ -172,6 +173,30 @@ final class AppViewModel: ObservableObject {
         scanTask = nil
         isScanning = false
         stageMessage = ""
+    }
+
+    func runAgents() {
+        guard !isScanning, !isRunningAgents, let run = activeRun else { return }
+        isRunningAgents = true
+        stageMessage = "Running local forensic agents..."
+
+        Task { @MainActor in
+            do {
+                let updated = try await engine.runAgents(for: run)
+                if let idx = runs.firstIndex(where: { $0.id == updated.id }) {
+                    runs[idx] = updated
+                } else {
+                    runs.insert(updated, at: 0)
+                }
+                selectedRunID = updated.id
+                try? await history.save(run: updated)
+                statusMessage = "Agents completed. Open Agent Summary for results."
+            } catch {
+                statusMessage = "Agent run failed: \(error.localizedDescription)"
+            }
+            stageMessage = ""
+            isRunningAgents = false
+        }
     }
 
     func clearResults(removeFiles: Bool = true) {

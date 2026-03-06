@@ -313,6 +313,7 @@ public actor ScannerEngine {
         _ = generateAllTextArtifact(for: &updated, at: runRoot)
         _ = generateHashCandidateArtifacts(for: &updated, at: runRoot)
         _ = generateEvidenceIntelligenceReport(for: updated, at: runRoot)
+        _ = generateAgentOutputs(for: updated, at: runRoot)
         _ = generateRunIndexHTML(for: updated, at: runRoot)
         _ = try generateHeatmaps(for: &updated, at: runRoot)
 
@@ -368,6 +369,23 @@ public actor ScannerEngine {
         }
 
         updated.outputRoot = runRoot.path
+        return updated
+    }
+
+    public func runAgents(for run: ScanRun) async throws -> ScanRun {
+        var updated = run
+        let runRoot = URL(fileURLWithPath: run.outputRoot, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: runRoot.path) else {
+            throw NSError(domain: "ScannerEngine", code: 404, userInfo: [
+                NSLocalizedDescriptionKey: "Run output folder not found. Run a scan/export first."
+            ])
+        }
+
+        _ = generateEvidenceIntelligenceReport(for: updated, at: runRoot)
+        _ = generateAgentOutputs(for: updated, at: runRoot)
+        _ = generateRunIndexHTML(for: updated, at: runRoot)
+        try writeJSON(updated.forensic, to: runRoot.appendingPathComponent("run_forensic.json"))
+        try writeJSON(updated.items, to: runRoot.appendingPathComponent("run_items.json"))
         return updated
     }
 
@@ -1707,6 +1725,7 @@ public actor ScannerEngine {
             <a href="URLs/URLs.html">Recovered URLs</a>
             <a href="txt/All The Text.txt">All The Text</a>
             <a href="evidence_intelligence/intelligence_report.md">Evidence Intelligence</a>
+            <a href="evidence_intelligence/agents_summary.md">Agent Summary</a>
             <a href="run_forensic.json">Forensic JSON</a>
             <a href="run_items.json">Items JSON</a>
           </div>
@@ -1853,6 +1872,271 @@ public actor ScannerEngine {
             return 1
         } catch {
             return 0
+        }
+    }
+
+    private func generateAgentOutputs(for run: ScanRun, at runRoot: URL) -> Int {
+        let outDir = runRoot.appendingPathComponent("evidence_intelligence", isDirectory: true)
+        let agentsDir = outDir.appendingPathComponent("agents", isDirectory: true)
+        try? FileManager.default.createDirectory(at: agentsDir, withIntermediateDirectories: true)
+
+        let items = run.items
+        let metrics = run.forensic.metrics ?? [:]
+        let total = max(items.count, 1)
+
+        let byCategory = Dictionary(grouping: items, by: \.category)
+        let topCategories = byCategory
+            .map { ($0.key.rawValue, $0.value.count) }
+            .sorted { lhs, rhs in
+                if lhs.1 == rhs.1 { return lhs.0 < rhs.0 }
+                return lhs.1 > rhs.1
+            }
+            .prefix(8)
+
+        var extCounts: [String: Int] = [:]
+        for item in items {
+            let ext = item.fileExtension.isEmpty ? "unknown" : item.fileExtension.lowercased()
+            extCounts[ext, default: 0] += 1
+        }
+        let topExts = extCounts
+            .sorted { lhs, rhs in
+                if lhs.value == rhs.value { return lhs.key < rhs.key }
+                return lhs.value > rhs.value
+            }
+            .prefix(15)
+
+        let urlsPath = runRoot.appendingPathComponent("URLs/URLs.txt").path
+        let allTextPath = runRoot.appendingPathComponent("txt/All The Text.txt").path
+        let hashPath = runRoot.appendingPathComponent("hash_candidates/hashcat_candidates.jsonl").path
+
+        let topURLs = readFirstLines(path: urlsPath, maxLines: 200)
+        let allTextLines = readFirstLines(path: allTextPath, maxLines: 1500)
+        let hashKinds = hashKindHistogram(jsonlPath: hashPath)
+
+        let messageLikeItems = items.filter {
+            let p = $0.sourcePath.lowercased()
+            return p.contains("chat") || p.contains("message") || p.contains("sms") || p.contains("mms")
+        }
+        let topMessageSources = Array(Set(messageLikeItems.map {
+            URL(fileURLWithPath: $0.sourcePath).lastPathComponent
+        })).sorted().prefix(50)
+
+        let likelyChatDBs = items.filter {
+            let ext = $0.fileExtension.lowercased()
+            let p = $0.sourcePath.lowercased()
+            let dbish = ext == "db" || ext == "sqlite" || ext == "sqlite3" || ext == "plist" || ext == "bplist"
+            return dbish && (p.contains("chat") || p.contains("message") || p.contains("sms") || p.contains("imessage"))
+        }
+
+        let languageSample = allTextLines.joined(separator: "\n").prefix(3200)
+        let riskScore = min(
+            100,
+            (metrics["messages"] ?? 0) * 2 +
+            (metrics["urls"] ?? 0) / 20 +
+            (metrics["hash_candidates"] ?? 0) / 50 +
+            (run.forensic.possibleDecryptableDBs * 8)
+        )
+        let riskBand: String = riskScore >= 70 ? "High" : (riskScore >= 35 ? "Medium" : "Low")
+
+        var recommendedActions: [String] = []
+        if !likelyChatDBs.isEmpty {
+            recommendedActions.append("Prioritize message DB parsing for likely chat databases.")
+        }
+        if (metrics["hash_candidates"] ?? 0) > 0 {
+            recommendedActions.append("Attempt offline cracking against hash candidates with context wordlists.")
+        }
+        if (metrics["urls"] ?? 0) > 100 {
+            recommendedActions.append("Cluster recovered URLs by host and date for lead triage.")
+        }
+        if run.forensic.possibleDecryptableDBs > 0 {
+            recommendedActions.append("Run decryptability checks against detected encrypted database signatures.")
+        }
+        if recommendedActions.isEmpty {
+            recommendedActions.append("No critical triage actions detected; continue manual review by category.")
+        }
+
+        var written = 0
+        func writeAgent(_ slug: String, title: String, body: String, payload: [String: Any]) {
+            do {
+                try body.write(
+                    to: agentsDir.appendingPathComponent("\(slug).md"),
+                    atomically: true,
+                    encoding: .utf8
+                )
+                let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+                try data.write(to: agentsDir.appendingPathComponent("\(slug).json"))
+                written += 1
+            } catch {
+                _ = title
+            }
+        }
+
+        let sourceProfilerLines = topCategories.map {
+            "- \($0.0): \($0.1) (\(Int(Double($0.1) / Double(total) * 100))%)"
+        }.joined(separator: "\n")
+        let topExtLines = topExts.map { "- \($0.key): \($0.value)" }.joined(separator: "\n")
+        writeAgent(
+            "01_source_profiler",
+            title: "Source Profiler",
+            body: """
+            # Agent 1: Source Profiler
+            ## Top Categories
+            \(sourceProfilerLines.isEmpty ? "- none" : sourceProfilerLines)
+
+            ## Top Extensions
+            \(topExtLines.isEmpty ? "- none" : topExtLines)
+            """,
+            payload: [
+                "agent": "source_profiler",
+                "top_categories": topCategories.map { ["category": $0.0, "count": $0.1] },
+                "top_extensions": topExts.map { ["extension": $0.key, "count": $0.value] }
+            ]
+        )
+
+        writeAgent(
+            "02_entity_triage",
+            title: "Entity Triage",
+            body: """
+            # Agent 2: Entity Triage
+            - URLs: \(metrics["urls"] ?? 0)
+            - Emails: \(metrics["emails"] ?? 0)
+            - Phones: \(metrics["phones"] ?? 0)
+            - Message Signals: \(metrics["messages"] ?? 0)
+            - Language Signals: \(metrics["language_signals"] ?? 0)
+
+            ## Sample URLs
+            \(topURLs.prefix(60).map { "- \($0)" }.joined(separator: "\n"))
+            """,
+            payload: [
+                "agent": "entity_triage",
+                "metrics": [
+                    "urls": metrics["urls"] ?? 0,
+                    "emails": metrics["emails"] ?? 0,
+                    "phones": metrics["phones"] ?? 0,
+                    "messages": metrics["messages"] ?? 0,
+                    "language_signals": metrics["language_signals"] ?? 0
+                ],
+                "sample_urls": Array(topURLs.prefix(200))
+            ]
+        )
+
+        writeAgent(
+            "03_hash_triage",
+            title: "Hash Triage",
+            body: """
+            # Agent 3: Hash Triage
+            - Hash candidates: \(metrics["hash_candidates"] ?? 0)
+
+            ## Hash Families
+            \(hashKinds.map { "- \($0.key): \($0.value)" }.joined(separator: "\n"))
+            """,
+            payload: [
+                "agent": "hash_triage",
+                "hash_candidates": metrics["hash_candidates"] ?? 0,
+                "hash_families": hashKinds.map { ["kind": $0.key, "count": $0.value] }
+            ]
+        )
+
+        writeAgent(
+            "04_message_surface",
+            title: "Message Surface",
+            body: """
+            # Agent 4: Message Surface
+            - Message-like items: \(messageLikeItems.count)
+            - Likely chat DB/plist files: \(likelyChatDBs.count)
+
+            ## Candidate Sources
+            \(topMessageSources.map { "- \($0)" }.joined(separator: "\n"))
+            """,
+            payload: [
+                "agent": "message_surface",
+                "message_like_items": messageLikeItems.count,
+                "likely_chat_databases": likelyChatDBs.prefix(100).map {
+                    [
+                        "source": $0.sourcePath,
+                        "extension": $0.fileExtension,
+                        "offset": $0.offset,
+                        "size": $0.length
+                    ]
+                }
+            ]
+        )
+
+        writeAgent(
+            "05_risk_scorer",
+            title: "Risk Scorer",
+            body: """
+            # Agent 5: Risk Scorer
+            - Risk score: \(riskScore)/100
+            - Risk band: \(riskBand)
+            - Possible decryptable DBs: \(run.forensic.possibleDecryptableDBs)
+            - Nested archives: \(run.forensic.nestedArchives)
+            """,
+            payload: [
+                "agent": "risk_scorer",
+                "risk_score": riskScore,
+                "risk_band": riskBand,
+                "possible_decryptable_dbs": run.forensic.possibleDecryptableDBs,
+                "nested_archives": run.forensic.nestedArchives
+            ]
+        )
+
+        writeAgent(
+            "06_action_planner",
+            title: "Action Planner",
+            body: """
+            # Agent 6: Action Planner
+            ## Recommended Next Steps
+            \(recommendedActions.map { "- \($0)" }.joined(separator: "\n"))
+
+            ## Analyst Notes Seed
+            \(languageSample.isEmpty ? "No text sample available." : String(languageSample))
+            """,
+            payload: [
+                "agent": "action_planner",
+                "recommended_actions": recommendedActions,
+                "analyst_notes_seed": String(languageSample)
+            ]
+        )
+
+        let summary = """
+        # Agent Summary
+        - Run: \(run.name)
+        - Output: \(run.outputRoot)
+        - Agent files generated: \(written)
+        - Risk: \(riskBand) (\(riskScore)/100)
+
+        ## Recommended Actions
+        \(recommendedActions.map { "- \($0)" }.joined(separator: "\n"))
+
+        ## Agent Outputs
+        - agents/01_source_profiler.md
+        - agents/02_entity_triage.md
+        - agents/03_hash_triage.md
+        - agents/04_message_surface.md
+        - agents/05_risk_scorer.md
+        - agents/06_action_planner.md
+        """
+
+        do {
+            try summary.write(
+                to: outDir.appendingPathComponent("agents_summary.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+            let payload: [String: Any] = [
+                "run_name": run.name,
+                "output_root": run.outputRoot,
+                "generated_agents": written,
+                "risk_score": riskScore,
+                "risk_band": riskBand,
+                "recommended_actions": recommendedActions
+            ]
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: outDir.appendingPathComponent("agents_summary.json"))
+            return written + 1
+        } catch {
+            return written
         }
     }
 
