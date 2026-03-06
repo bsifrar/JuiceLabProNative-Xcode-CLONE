@@ -1301,16 +1301,17 @@ public actor ScannerEngine {
             if processed.contains(item.sourcePath) { continue }
             processed.insert(item.sourcePath)
 
-            let src = URL(fileURLWithPath: item.sourcePath)
+            let ioPath = item.outputPath ?? item.sourcePath
+            let src = URL(fileURLWithPath: ioPath)
             let ext = src.pathExtension.lowercased()
-            let hasSQLiteHeader = hasSQLiteHeader(path: item.sourcePath)
+            let hasSQLiteHeader = hasSQLiteHeader(path: ioPath)
             if !sqliteExts.contains(ext), !item.detectedType.lowercased().contains("sqlite"), !hasSQLiteHeader {
                 continue
             }
 
-            guard let report = extractSQLiteReport(from: item.sourcePath) else { continue }
+            guard let report = extractSQLiteReport(from: ioPath) else { continue }
 
-            let stem = sanitizedFileStem(item.sourcePath)
+            let stem = sanitizedFileStem(ioPath)
             var dst = reportDir.appendingPathComponent("\(stem).sqlite.txt")
             if FileManager.default.fileExists(atPath: dst.path) {
                 dst = reportDir.appendingPathComponent("\(stem)-\(item.id.uuidString.prefix(8)).sqlite.txt")
@@ -1344,16 +1345,17 @@ public actor ScannerEngine {
             if processed.contains(item.sourcePath) { continue }
             processed.insert(item.sourcePath)
 
-            let sourceURL = URL(fileURLWithPath: item.sourcePath)
+            let ioPath = item.outputPath ?? item.sourcePath
+            let sourceURL = URL(fileURLWithPath: ioPath)
             let ext = sourceURL.pathExtension.lowercased()
-            let hasPlistHeader = hasBPlistHeader(path: item.sourcePath)
+            let hasPlistHeader = hasBPlistHeader(path: ioPath)
             if ext != "plist" && ext != "bplist" && !hasPlistHeader {
                 continue
             }
 
-            guard let report = extractPlistReport(from: item.sourcePath) else { continue }
+            guard let report = extractPlistReport(from: ioPath) else { continue }
 
-            let stem = sanitizedFileStem(item.sourcePath)
+            let stem = sanitizedFileStem(ioPath)
             var dst = reportDir.appendingPathComponent("\(stem).plist.txt")
             if FileManager.default.fileExists(atPath: dst.path) {
                 dst = reportDir.appendingPathComponent("\(stem)-\(item.id.uuidString.prefix(8)).plist.txt")
@@ -1444,6 +1446,12 @@ public actor ScannerEngine {
             return item.category == .text || ["txt", "md", "rtf", "csv", "json", "xml", "html", "htm", "log"].contains(ext)
         }
         for item in textItems {
+            let sourceURL = URL(fileURLWithPath: item.outputPath ?? item.sourcePath)
+            textCandidates.append(sourceURL)
+        }
+        // Also scan binary/uncertain files directly; this mirrors metric extraction behavior.
+        let binaryExts: Set<String> = ["db", "sqlite", "sqlite3", "dat", "bin", "blob", "cache", "tmp", "raw", "plist", "bplist"]
+        for item in run.items where item.category == .uncertain || binaryExts.contains(item.fileExtension.lowercased()) {
             let sourceURL = URL(fileURLWithPath: item.outputPath ?? item.sourcePath)
             textCandidates.append(sourceURL)
         }
@@ -1872,6 +1880,53 @@ public actor ScannerEngine {
             }
             sqlite3_finalize(stmt)
             lines.append("")
+
+            // Try to surface message-like text columns for chat forensics.
+            let cols = sqliteColumnPairs(
+                db: db,
+                sql: "PRAGMA table_info(\"\(escaped)\");"
+            )
+            let textCols = cols
+                .filter { col in
+                    let name = col.name.lowercased()
+                    let type = col.type.lowercased()
+                    let nameHit = name.contains("message") || name.contains("body") || name == "text" || name.contains("content") || name.contains("subject")
+                    let typeHit = type.contains("text") || type.contains("char") || type.contains("clob")
+                    return nameHit || typeHit
+                }
+                .prefix(4)
+
+            for col in textCols {
+                let cEscaped = col.name.replacingOccurrences(of: "\"", with: "\"\"")
+                lines.append("  Text Extract: column \(col.name)")
+                let textSQL = """
+                SELECT rowid, "\(cEscaped)"
+                FROM "\(escaped)"
+                WHERE "\(cEscaped)" IS NOT NULL
+                ORDER BY rowid DESC
+                LIMIT 80;
+                """
+                var tstmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, textSQL, -1, &tstmt, nil) == SQLITE_OK, let tstmt else {
+                    lines.append("    <failed>")
+                    continue
+                }
+                var shown = 0
+                while sqlite3_step(tstmt) == SQLITE_ROW, shown < 80 {
+                    let rowid = sqliteColumnValue(stmt: tstmt, index: 0, maxText: 24)
+                    let value = sqliteColumnValue(stmt: tstmt, index: 1, maxText: 500)
+                    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty && trimmed != "NULL" {
+                        lines.append("    [rowid=\(rowid)] \(trimmed)")
+                        shown += 1
+                    }
+                }
+                sqlite3_finalize(tstmt)
+                if shown == 0 {
+                    lines.append("    <no printable text rows>")
+                }
+            }
+            if !textCols.isEmpty { lines.append("") }
         }
 
         return lines.joined(separator: "\n")
@@ -1905,6 +1960,27 @@ public actor ScannerEngine {
             let value = sqliteColumnValue(stmt: stmt, index: 0, maxText: 200)
             if !value.isEmpty {
                 out.append(value)
+            }
+        }
+        return out
+        #else
+        _ = (db, sql)
+        return []
+        #endif
+    }
+
+    private func sqliteColumnPairs(db: OpaquePointer, sql: String) -> [(name: String, type: String)] {
+        #if canImport(SQLite3)
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return [] }
+        defer { sqlite3_finalize(stmt) }
+
+        var out: [(name: String, type: String)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let name = sqliteColumnValue(stmt: stmt, index: 1, maxText: 120)
+            let type = sqliteColumnValue(stmt: stmt, index: 2, maxText: 120)
+            if !name.isEmpty {
+                out.append((name: name, type: type))
             }
         }
         return out
