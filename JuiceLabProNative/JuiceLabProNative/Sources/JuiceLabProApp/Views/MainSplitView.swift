@@ -388,6 +388,11 @@ private struct ResultsTableView: View {
             TableColumn("Source", value: \.sourceDisplayName) { item in
                 Text(item.sourceDisplayName)
             }
+            TableColumn("Source Folder", value: \.sourceFolderPath) { item in
+                Text(item.sourceFolderPath)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
             TableColumn("Offset", value: \.offset) { item in
                 Text(String(format: "0x%X", item.offset))
             }
@@ -412,6 +417,7 @@ private struct ResultsTableView: View {
 
 private extension FoundItem {
     var sourceDisplayName: String { URL(fileURLWithPath: sourcePath).lastPathComponent }
+    var sourceFolderPath: String { URL(fileURLWithPath: sourcePath).deletingLastPathComponent().path }
     var validationText: String { validationStatus.rawValue }
 }
 
@@ -429,7 +435,15 @@ private struct InspectorView: View {
                         Text("Confidence: \(Int(item.confidence * 100))%")
                         Text("Offset: 0x\(String(item.offset, radix: 16))")
                         Text("Status: \(item.validationStatus.rawValue)")
-                        Text("Source: \(item.sourcePath)").lineLimit(2)
+                        Text("Source file: \(URL(fileURLWithPath: item.sourcePath).lastPathComponent)")
+                        Text("Source folder: \(URL(fileURLWithPath: item.sourcePath).deletingLastPathComponent().path)")
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                        Text("Source path: \(item.sourcePath)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -936,6 +950,57 @@ private struct ForensicDashboardView: View {
                         .buttonStyle(ActionButtonStyle())
                     }
 
+                    GroupBox("Deduped Items") {
+                        if run.dedupeRemoved.isEmpty {
+                            Text("No deduped items in this run.")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Exact duplicates removed: \(run.dedupeRemoved.count)")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("Grouped by dedupe key so you can audit what was kept vs removed.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                ScrollView {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        ForEach(groupedDedupeRemovals(run.dedupeRemoved), id: \.dedupeKey) { group in
+                                            DisclosureGroup {
+                                                VStack(alignment: .leading, spacing: 6) {
+                                                    Text("Kept: \(group.keptPath)")
+                                                        .font(.caption)
+                                                        .textSelection(.enabled)
+                                                        .lineLimit(2)
+                                                        .truncationMode(.middle)
+                                                    ForEach(group.removedPaths, id: \.self) { removed in
+                                                        Text("Removed: \(removed)")
+                                                            .font(.caption)
+                                                            .foregroundStyle(.secondary)
+                                                            .textSelection(.enabled)
+                                                            .lineLimit(2)
+                                                            .truncationMode(.middle)
+                                                    }
+                                                }
+                                                .padding(.top, 2)
+                                            } label: {
+                                                HStack {
+                                                    Text(URL(fileURLWithPath: group.keptPath).lastPathComponent)
+                                                        .lineLimit(1)
+                                                        .truncationMode(.middle)
+                                                    Spacer()
+                                                    Text("\(group.removedPaths.count) removed")
+                                                        .font(.caption.weight(.semibold))
+                                                        .foregroundStyle(.orange)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                .frame(maxHeight: 220)
+                            }
+                        }
+                    }
+
                     GroupBox("Keys Found") {
                         if f.keyFiles.isEmpty { Text("None").foregroundStyle(.secondary) }
                         else { ForEach(f.keyFiles, id: \.self) { Text($0).lineLimit(1) } }
@@ -1028,6 +1093,32 @@ private struct ForensicDashboardView: View {
             .prefix(18)
             .map { ($0.key, $0.value) }
     }
+
+    private func groupedDedupeRemovals(_ removed: [DedupeRemoval]) -> [DedupeGroup] {
+        var grouped: [String: DedupeGroup] = [:]
+        for row in removed {
+            if grouped[row.dedupeKey] == nil {
+                grouped[row.dedupeKey] = DedupeGroup(
+                    dedupeKey: row.dedupeKey,
+                    keptPath: row.keptSourcePath,
+                    removedPaths: []
+                )
+            }
+            grouped[row.dedupeKey]?.removedPaths.append(row.removedSourcePath)
+        }
+        return grouped.values.sorted { lhs, rhs in
+            if lhs.removedPaths.count == rhs.removedPaths.count {
+                return lhs.keptPath < rhs.keptPath
+            }
+            return lhs.removedPaths.count > rhs.removedPaths.count
+        }
+    }
+}
+
+private struct DedupeGroup {
+    let dedupeKey: String
+    let keptPath: String
+    var removedPaths: [String]
 }
 
 private struct FlowTagView: View {
