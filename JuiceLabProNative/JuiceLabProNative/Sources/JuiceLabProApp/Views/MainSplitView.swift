@@ -127,12 +127,16 @@ private struct ToolbarView: View {
 
             HStack(spacing: 8) {
                 Button {
-                    vm.startScan()
+                    if vm.droppedURLs.isEmpty {
+                        pickSources()
+                    } else {
+                        vm.startScan()
+                    }
                 } label: {
                     Label("Start Scan", systemImage: "play.fill")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
+                .disabled(vm.isScanning)
 
                 Button("Stop") { vm.stopScan() }
                     .disabled(!vm.isScanning)
@@ -191,13 +195,17 @@ private struct DropAndStatsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button {
-                    vm.startScan()
+                    if vm.droppedURLs.isEmpty {
+                        pickSources()
+                    } else {
+                        vm.startScan()
+                    }
                 } label: {
                     Label("Start Scan", systemImage: "play.fill")
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
+                .disabled(vm.isScanning)
                 if vm.droppedURLs.isEmpty {
                     Text("No sources selected.")
                         .font(.caption)
@@ -267,6 +275,19 @@ private struct DropAndStatsView: View {
             }
             .frame(width: 260)
             .cardSurface()
+        }
+    }
+
+    private func pickSources() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.canCreateDirectories = false
+        panel.prompt = "Add"
+
+        if panel.runModal() == .OK {
+            vm.addSources(panel.urls)
         }
     }
 }

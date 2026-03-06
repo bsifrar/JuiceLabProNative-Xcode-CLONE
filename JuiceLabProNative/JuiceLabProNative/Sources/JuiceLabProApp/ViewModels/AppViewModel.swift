@@ -84,9 +84,16 @@ final class AppViewModel: ObservableObject {
     }
 
     func startScan() {
-        guard !droppedURLs.isEmpty, !isScanning else { return }
+        if isScanning {
+            statusMessage = "Scan already running."
+            return
+        }
+        guard !droppedURLs.isEmpty else {
+            statusMessage = "No sources selected. Add files/folders first."
+            return
+        }
         isScanning = true
-        statusMessage = ""
+        statusMessage = "Starting scan for \(droppedURLs.count) source(s)..."
         stageMessage = "Preparing scan..."
         progress = ScanProgress()
 
