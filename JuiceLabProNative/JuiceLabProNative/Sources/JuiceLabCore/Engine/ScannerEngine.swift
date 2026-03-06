@@ -315,6 +315,7 @@ public actor ScannerEngine {
         _ = generateEvidenceIntelligenceReport(for: updated, at: runRoot)
         _ = generateAgentOutputs(for: updated, at: runRoot)
         _ = generateCoverageAudit(for: updated, at: runRoot)
+        _ = generateBinaryIntelligenceArtifacts(for: updated, at: runRoot)
         _ = generateRunIndexHTML(for: updated, at: runRoot)
         _ = try generateHeatmaps(for: &updated, at: runRoot)
 
@@ -385,6 +386,7 @@ public actor ScannerEngine {
         _ = generateEvidenceIntelligenceReport(for: updated, at: runRoot)
         _ = generateAgentOutputs(for: updated, at: runRoot)
         _ = generateCoverageAudit(for: updated, at: runRoot)
+        _ = generateBinaryIntelligenceArtifacts(for: updated, at: runRoot)
         _ = generateRunIndexHTML(for: updated, at: runRoot)
         try writeJSON(updated.forensic, to: runRoot.appendingPathComponent("run_forensic.json"))
         try writeJSON(updated.items, to: runRoot.appendingPathComponent("run_items.json"))
@@ -404,6 +406,7 @@ public actor ScannerEngine {
         _ = generateEvidenceIntelligenceReport(for: updated, at: runRoot)
         _ = generateAgentOutputs(for: updated, at: runRoot)
         _ = generateCoverageAudit(for: updated, at: runRoot)
+        _ = generateBinaryIntelligenceArtifacts(for: updated, at: runRoot)
         _ = generateRunIndexHTML(for: updated, at: runRoot)
         try writeJSON(updated.forensic, to: runRoot.appendingPathComponent("run_forensic.json"))
         try writeJSON(updated.items, to: runRoot.appendingPathComponent("run_items.json"))
@@ -600,12 +603,8 @@ public actor ScannerEngine {
 
             guard data.count >= 64 else { return StageOutput() }
 
-            let stride: Int
-            switch context.settings.performanceMode {
-            case .fast: stride = 16
-            case .balanced: stride = 4
-            case .thorough: stride = 1
-            }
+            // Byte-accurate scan to avoid missing signatures at non-aligned offsets.
+            let stride = 1
 
             let maxBytesToInspect: Int
             switch context.settings.performanceMode {
@@ -1749,6 +1748,7 @@ public actor ScannerEngine {
             <a href="evidence_intelligence/agents_summary.md">Agent Summary</a>
             <a href="evidence_intelligence/actions/actions_report.md">Agent Actions</a>
             <a href="coverage/coverage_report.md">Coverage Audit</a>
+            <a href="binary_intelligence/index.md">Binary Intelligence</a>
             <a href="run_forensic.json">Forensic JSON</a>
             <a href="run_items.json">Items JSON</a>
           </div>
@@ -2504,6 +2504,161 @@ public actor ScannerEngine {
             return 3
         } catch {
             return 0
+        }
+    }
+
+    private func generateBinaryIntelligenceArtifacts(for run: ScanRun, at runRoot: URL) -> Int {
+        let outDir = runRoot.appendingPathComponent("binary_intelligence", isDirectory: true)
+        try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        let binaryExts: Set<String> = [
+            "dat", "bin", "raw", "blob", "cache", "tmp",
+            "db", "sqlite", "sqlite3", "plist", "bplist",
+            "rem", "cod", "bbb", "ipd", "gz", "tgz", "xz", "bz2"
+        ]
+
+        let grouped = Dictionary(grouping: run.items, by: \.sourcePath)
+        guard !grouped.isEmpty else { return 0 }
+
+        var indexRows: [String] = []
+        var fileCount = 0
+
+        for (sourcePath, items) in grouped {
+            let srcURL = URL(fileURLWithPath: sourcePath)
+            let ext = srcURL.pathExtension.lowercased()
+            let candidate = binaryExts.contains(ext) || items.contains(where: { $0.category == .uncertain || $0.category == .archives })
+            if !candidate { continue }
+
+            guard let data = try? Data(contentsOf: srcURL, options: .mappedIfSafe) else { continue }
+            let capped = data.prefix(128 * 1_048_576) // keep bounded
+            if capped.isEmpty { continue }
+
+            let headHex = capped.prefix(64).map { String(format: "%02x", $0) }.joined(separator: " ")
+            let tailHex = capped.suffix(64).map { String(format: "%02x", $0) }.joined(separator: " ")
+            let entropy = shannonEntropy(bytes: capped)
+            let entropyClass: String
+            if entropy >= 7.6 { entropyClass = "high (compressed/encrypted-like)" }
+            else if entropy >= 6.6 { entropyClass = "medium-high" }
+            else if entropy >= 5.2 { entropyClass = "medium" }
+            else { entropyClass = "low/structured" }
+
+            let sigHits = signatureOffsets(in: capped)
+            let topSigLines = sigHits.prefix(120).map { "- \($0.type) @ 0x\(String($0.offset, radix: 16))" }
+
+            let stringsSample = extractMeaningfulStrings(from: srcURL.path)?
+                .split(whereSeparator: \.isNewline)
+                .prefix(60)
+                .map(String.init)
+                .joined(separator: "\n") ?? "No printable strings extracted."
+
+            let fileName = sanitizedFileStem(sourcePath)
+            let mdPath = outDir.appendingPathComponent("\(fileName).md")
+            let jsonPath = outDir.appendingPathComponent("\(fileName).json")
+
+            let md = """
+            # Binary Intelligence: \(srcURL.lastPathComponent)
+
+            - Source: \(sourcePath)
+            - Size: \(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))
+            - SHA256: \(Hashing.hexSHA256(data))
+            - Entropy: \(String(format: "%.4f", entropy)) (\(entropyClass))
+            - Signature hits: \(sigHits.count)
+
+            ## Hex Head (64 bytes)
+            `\(headHex)`
+
+            ## Hex Tail (64 bytes)
+            `\(tailHex)`
+
+            ## Signature Offsets
+            \(topSigLines.isEmpty ? "- none" : topSigLines.joined(separator: "\n"))
+
+            ## Strings Sample
+            \(stringsSample)
+            """
+
+            let payload: [String: Any] = [
+                "source": sourcePath,
+                "size_bytes": data.count,
+                "sha256": Hashing.hexSHA256(data),
+                "entropy": entropy,
+                "entropy_class": entropyClass,
+                "signature_hits": sigHits.map { ["type": $0.type, "offset": $0.offset] },
+                "hex_head_64": headHex,
+                "hex_tail_64": tailHex
+            ]
+
+            do {
+                try md.write(to: mdPath, atomically: true, encoding: .utf8)
+                let json = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+                try json.write(to: jsonPath)
+                fileCount += 1
+                indexRows.append("- [\(srcURL.lastPathComponent)](\(mdPath.lastPathComponent)) | entropy \(String(format: "%.3f", entropy)) | signatures \(sigHits.count)")
+            } catch {
+                continue
+            }
+        }
+
+        let index = """
+        # Binary Intelligence Index
+        - Run: \(run.name)
+        - Files analyzed: \(fileCount)
+
+        \(indexRows.isEmpty ? "- none" : indexRows.joined(separator: "\n"))
+        """
+        do {
+            try index.write(to: outDir.appendingPathComponent("index.md"), atomically: true, encoding: .utf8)
+            return fileCount + 1
+        } catch {
+            return fileCount
+        }
+    }
+
+    private func shannonEntropy(bytes: Data.SubSequence) -> Double {
+        if bytes.isEmpty { return 0 }
+        var counts = Array(repeating: 0, count: 256)
+        for b in bytes {
+            counts[Int(b)] += 1
+        }
+        let total = Double(bytes.count)
+        var entropy = 0.0
+        for c in counts where c > 0 {
+            let p = Double(c) / total
+            entropy -= p * log2(p)
+        }
+        return entropy
+    }
+
+    private func signatureOffsets(in data: Data.SubSequence) -> [(type: String, offset: Int)] {
+        let signatures: [(String, [UInt8])] = [
+            ("jpeg", [0xFF, 0xD8, 0xFF]),
+            ("png", [0x89, 0x50, 0x4E, 0x47]),
+            ("gif", [0x47, 0x49, 0x46, 0x38]),
+            ("pdf", [0x25, 0x50, 0x44, 0x46]),
+            ("zip", [0x50, 0x4B, 0x03, 0x04]),
+            ("gzip", [0x1F, 0x8B]),
+            ("xz", [0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]),
+            ("bzip2", [0x42, 0x5A, 0x68])
+        ]
+        guard data.count >= 4 else { return [] }
+        let arr = Array(data)
+        var hits: [(String, Int)] = []
+        let n = arr.count
+        for (kind, magic) in signatures {
+            let m = magic.count
+            if n < m { continue }
+            var i = 0
+            while i <= n - m {
+                if arr[i..<(i + m)].elementsEqual(magic) {
+                    hits.append((kind, i))
+                    if hits.count >= 2000 { return hits }
+                }
+                i += 1
+            }
+        }
+        return hits.sorted {
+            if $0.1 == $1.1 { return $0.0 < $1.0 }
+            return $0.1 < $1.1
         }
     }
 

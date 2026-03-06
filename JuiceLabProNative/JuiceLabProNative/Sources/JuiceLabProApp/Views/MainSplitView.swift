@@ -854,6 +854,12 @@ private struct ForensicDashboardView: View {
                             }
                             .disabled(!fileExists(pathInRun(run.outputRoot, "coverage/coverage_report.md")))
                             .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Button("Open Binary Intelligence") {
+                                openIfExists(path: pathInRun(run.outputRoot, "binary_intelligence/index.md"))
+                            }
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "binary_intelligence/index.md")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .buttonStyle(.bordered)
                     }
