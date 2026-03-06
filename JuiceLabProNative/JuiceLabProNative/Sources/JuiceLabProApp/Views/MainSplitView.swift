@@ -13,9 +13,8 @@ struct MainSplitView: View {
         ZStack {
             LinearGradient(
                 colors: [
-                    Color(red: 0.03, green: 0.04, blue: 0.11),
-                    Color(red: 0.02, green: 0.02, blue: 0.07),
-                    Color(red: 0.00, green: 0.00, blue: 0.03)
+                    AppTheme.background,
+                    Color.black
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -44,7 +43,7 @@ struct MainSplitView: View {
                     .padding()
             }
         }
-        .tint(Color(red: 0.45, green: 0.34, blue: 1.00))
+        .tint(AppTheme.primary)
         .preferredColorScheme(.dark)
         .searchable(text: $vm.query, placement: .toolbar)
     }
@@ -870,7 +869,7 @@ private struct ForensicDashboardView: View {
                             .disabled(!fileExists(pathInRun(run.outputRoot, "dedupe/dedupe_report.md")))
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(ActionButtonStyle())
                     }
 
                     GroupBox("Keys Found") {
@@ -994,9 +993,16 @@ private struct SummaryCard: View {
     let title: String
     let value: String
     var body: some View {
-        VStack { Text(title).font(.caption).foregroundStyle(.secondary); Text(value).font(.title2.bold()) }
+        VStack {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(AppTheme.mutedText)
+            Text(value)
+                .font(.title2.bold())
+                .foregroundStyle(AppTheme.text)
+        }
             .frame(width: 180, height: 80)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color.gray.opacity(0.12)))
+            .forensicSummaryCardStyle()
     }
 }
 
