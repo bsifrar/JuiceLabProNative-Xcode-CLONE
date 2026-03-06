@@ -73,6 +73,10 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func removeSource(_ url: URL) {
+        droppedURLs.removeAll { $0 == url }
+    }
+
     func clearSources() {
         droppedURLs.removeAll()
     }

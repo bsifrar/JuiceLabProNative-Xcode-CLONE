@@ -88,6 +88,11 @@ private struct ToolbarView: View {
                 pickSources()
             }
 
+            Button("Clear Sources") {
+                vm.clearSources()
+            }
+            .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
+
             Button("Start") { vm.startScan() }
                 .buttonStyle(.borderedProminent)
                 .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
@@ -147,6 +152,35 @@ private struct DropAndStatsView: View {
                 Text("Sources: \(vm.droppedURLs.count)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if vm.droppedURLs.isEmpty {
+                    Text("No sources selected.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(vm.droppedURLs, id: \.self) { url in
+                                HStack(spacing: 8) {
+                                    Text(url.lastPathComponent)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Spacer(minLength: 4)
+                                    Button {
+                                        vm.removeSource(url)
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Remove source")
+                                    .disabled(vm.isScanning)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 90)
+                }
                 Text("Output: \(vm.settings.outputFolder)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
