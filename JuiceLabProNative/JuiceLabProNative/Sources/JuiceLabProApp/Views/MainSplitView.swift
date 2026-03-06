@@ -824,6 +824,30 @@ private struct ForensicDashboardView: View {
                             }
                             .disabled(!fileExists(pathInRun(run.outputRoot, "evidence_intelligence/actions/actions_report.md")))
                             .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Button("Open Messages Extracted") {
+                                openIfExists(path: pathInRun(run.outputRoot, "evidence_intelligence/actions/messages_extracted.txt"))
+                            }
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "evidence_intelligence/actions/messages_extracted.txt")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Button("Open Hash Wordlist") {
+                                openIfExists(path: pathInRun(run.outputRoot, "evidence_intelligence/actions/hash_wordlist.txt"))
+                            }
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "evidence_intelligence/actions/hash_wordlist.txt")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Button("Open URL Clusters") {
+                                openIfExists(path: pathInRun(run.outputRoot, "evidence_intelligence/actions/url_clusters.md"))
+                            }
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "evidence_intelligence/actions/url_clusters.md")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Button("Open Decryptability Checks") {
+                                openIfExists(path: pathInRun(run.outputRoot, "evidence_intelligence/actions/decryptability_checks.md"))
+                            }
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "evidence_intelligence/actions/decryptability_checks.md")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .buttonStyle(.bordered)
                     }
