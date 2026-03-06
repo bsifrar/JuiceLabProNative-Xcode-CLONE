@@ -542,12 +542,12 @@ private struct PreviewView: View {
     @State private var previewText: String = ""
     @State private var pdfDocument: PDFDocument?
     @State private var avPlayer: AVPlayer?
-    @State private var htmlPreview: (html: String, baseURL: URL)?
+    @State private var htmlPreview: HTMLPreviewContent?
 
     var body: some View {
         ZStack {
             if let html = htmlPreview {
-                HTMLPreviewView(html: html.html, baseURL: html.baseURL)
+                HTMLPreviewView(content: html)
             } else if let doc = pdfDocument {
                 PDFKitView(document: doc)
             } else if let player = avPlayer {
@@ -625,10 +625,15 @@ private struct PreviewView: View {
         let declaredExt = item.fileExtension.lowercased()
         let declaredType = item.detectedType.lowercased()
         let htmlCandidate = data.prefix(256_000)
-        if (htmlExts.contains(ext) || htmlExts.contains(declaredExt) || declaredType == "html" || looksLikeHTML(data: htmlCandidate)),
-           let html = decodeText(data: htmlCandidate) {
-            await MainActor.run { self.htmlPreview = (html: html, baseURL: url.deletingLastPathComponent()) }
-            return
+        if (htmlExts.contains(ext) || htmlExts.contains(declaredExt) || declaredType == "html" || looksLikeHTML(data: htmlCandidate)) {
+            if htmlExts.contains(ext) || htmlExts.contains(declaredExt) || declaredType == "html" {
+                await MainActor.run { self.htmlPreview = .file(url) }
+                return
+            }
+            if let html = decodeText(data: htmlCandidate) {
+                await MainActor.run { self.htmlPreview = .inline(html: html, baseURL: url.deletingLastPathComponent()) }
+                return
+            }
         }
 
         let videoExts: Set<String> = ["mp4", "mov", "mkv", "avi", "webm", "mpeg", "m2ts"]
@@ -828,19 +833,32 @@ private struct AVPlayerViewWrapper: NSViewRepresentable {
     }
 }
 
+private enum HTMLPreviewContent {
+    case file(URL)
+    case inline(html: String, baseURL: URL?)
+}
+
 private struct HTMLPreviewView: NSViewRepresentable {
-    let html: String
-    let baseURL: URL?
+    let content: HTMLPreviewContent
 
     func makeNSView(context: Context) -> WKWebView {
         let webView = WKWebView(frame: .zero)
         webView.setValue(false, forKey: "drawsBackground")
-        webView.loadHTMLString(html, baseURL: baseURL)
+        load(content, into: webView)
         return webView
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
-        nsView.loadHTMLString(html, baseURL: baseURL)
+        load(content, into: nsView)
+    }
+
+    private func load(_ content: HTMLPreviewContent, into webView: WKWebView) {
+        switch content {
+        case .file(let url):
+            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        case .inline(let html, let baseURL):
+            webView.loadHTMLString(html, baseURL: baseURL)
+        }
     }
 }
 
