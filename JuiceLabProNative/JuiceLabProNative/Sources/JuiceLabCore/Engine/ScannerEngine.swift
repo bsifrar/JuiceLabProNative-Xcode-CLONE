@@ -391,6 +391,7 @@ public actor ScannerEngine {
         func process(file: URL, data: Data, context: ScanContext) async -> StageOutput {
             var out = StageOutput()
             let ext = file.pathExtension.lowercased()
+            let lowerPath = file.path.lowercased()
 
             if ext == "rem" { out.forensicDelta.remCount += 1 }
 
@@ -420,6 +421,11 @@ public actor ScannerEngine {
             if indicators.urls > 0 { out.forensicDelta.metrics["urls"] = indicators.urls }
             if indicators.phones > 0 { out.forensicDelta.metrics["phones"] = indicators.phones }
             if indicators.languageSignals > 0 { out.forensicDelta.metrics["language_signals"] = indicators.languageSignals }
+
+            let artifactSignals = extractArtifactPathSignals(from: lowerPath)
+            for (k, v) in artifactSignals where v > 0 {
+                out.forensicDelta.metrics[k] = v
+            }
             return out
         }
 
@@ -445,7 +451,7 @@ public actor ScannerEngine {
             let sample = Data(data.prefix(2 * 1_048_576))
             if sample.isEmpty { return (0, 0, 0, 0, 0) }
 
-            let raw = String(decoding: sample, as: UTF8.self)
+            let raw = String(decoding: sample, as: UTF8.self).replacingOccurrences(of: "\u{0}", with: " ")
             if raw.isEmpty { return (0, 0, 0, 0, 0) }
             let lower = raw.lowercased()
 
@@ -456,13 +462,31 @@ public actor ScannerEngine {
             for token in messageKeywords where lower.contains(token) { msgHits += 1 }
 
             let emails = regexCount(pattern: #"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}"#, in: raw)
-            let urls = regexCount(pattern: #"https?://[^\s"']+"#, in: raw)
+            let urls = regexCount(pattern: #"(?:https?://|ftp://|www\.)[^\s"'<>()]{4,}"#, in: raw)
             let phones = regexCount(pattern: #"\+?\d[\d\-\(\) ]{7,}\d"#, in: raw)
 
             let alphabetic = raw.unicodeScalars.filter { CharacterSet.letters.contains($0) }.count
             let languageSignals = alphabetic > 200 ? 1 : 0
 
             return (msgHits, emails, urls, phones, languageSignals)
+        }
+
+        private func extractArtifactPathSignals(from lowerPath: String) -> [String: Int] {
+            let pathGroups: [(String, [String])] = [
+                ("artifact_browser", ["history", "cookies", "cache", "webcache", "bookmark", "places.sqlite", "favicons"]),
+                ("artifact_messages", ["chat", "message", "sms", "mms", "imessage", "whatsapp", "telegram", "signal", "line", "wechat"]),
+                ("artifact_media", ["thumb", "thumbnail", "dcim", "camera", "photos", "media"]),
+                ("artifact_system", ["registry", "prefetch", "usn", "eventlog", "evtx", "fsevents"]),
+                ("artifact_keys", ["keychain", "keystore", "wallet", "token", "credential"])
+            ]
+
+            var metrics: [String: Int] = [:]
+            for (metric, needles) in pathGroups {
+                if needles.contains(where: { lowerPath.contains($0) }) {
+                    metrics[metric] = 1
+                }
+            }
+            return metrics
         }
 
         private func regexCount(pattern: String, in text: String) -> Int {
@@ -2071,8 +2095,11 @@ public actor ScannerEngine {
         case SQLITE_BLOB:
             let len = Int(sqlite3_column_bytes(stmt, Int32(index)))
             guard let ptr = sqlite3_column_blob(stmt, Int32(index)), len > 0 else { return "<BLOB 0 bytes>" }
-            let blob = Data(bytes: ptr, count: min(len, 64))
-            let preview = blob.map { String(format: "%02x", $0) }.joined()
+            let sample = Data(bytes: ptr, count: min(len, 16 * 1024))
+            let preview = sample.prefix(64).map { String(format: "%02x", $0) }.joined()
+            if let text = extractTextFromBlob(sample, maxText: maxText) {
+                return "<BLOB \(len) bytes text=\(text)>"
+            }
             return "<BLOB \(len) bytes preview=\(preview)>"
         case SQLITE_NULL:
             return "NULL"
@@ -2083,6 +2110,66 @@ public actor ScannerEngine {
         _ = (stmt, index, maxText)
         return ""
         #endif
+    }
+
+    private func extractTextFromBlob(_ blob: Data, maxText: Int) -> String? {
+        if blob.isEmpty { return nil }
+
+        var plistFormat = PropertyListSerialization.PropertyListFormat.binary
+        if let value = try? PropertyListSerialization.propertyList(from: blob, options: [], format: &plistFormat) {
+            var hits: [String] = []
+            collectPlistStrings(value, into: &hits, limit: 24)
+            if !hits.isEmpty {
+                let joined = hits.joined(separator: " | ")
+                return joined.count > maxText ? String(joined.prefix(maxText)) + "...<truncated>" : joined
+            }
+        }
+
+        if let utf8 = String(data: blob, encoding: .utf8) {
+            let cleaned = utf8.replacingOccurrences(of: "\u{0}", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.count >= 6 {
+                return cleaned.count > maxText ? String(cleaned.prefix(maxText)) + "...<truncated>" : cleaned
+            }
+        }
+        if let utf16le = String(data: blob, encoding: .utf16LittleEndian) {
+            let cleaned = utf16le.replacingOccurrences(of: "\u{0}", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.count >= 6 {
+                return cleaned.count > maxText ? String(cleaned.prefix(maxText)) + "...<truncated>" : cleaned
+            }
+        }
+        if let utf16be = String(data: blob, encoding: .utf16BigEndian) {
+            let cleaned = utf16be.replacingOccurrences(of: "\u{0}", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.count >= 6 {
+                return cleaned.count > maxText ? String(cleaned.prefix(maxText)) + "...<truncated>" : cleaned
+            }
+        }
+
+        return nil
+    }
+
+    private func collectPlistStrings(_ value: Any, into out: inout [String], limit: Int) {
+        if out.count >= limit { return }
+        if let s = value as? String {
+            let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, !out.contains(trimmed) {
+                out.append(trimmed)
+            }
+            return
+        }
+        if let dict = value as? [String: Any] {
+            for key in dict.keys.sorted() {
+                if out.count >= limit { break }
+                collectPlistStrings(dict[key] as Any, into: &out, limit: limit)
+            }
+            return
+        }
+        if let arr = value as? [Any] {
+            for entry in arr {
+                if out.count >= limit { break }
+                collectPlistStrings(entry, into: &out, limit: limit)
+            }
+            return
+        }
     }
 
     private func extractMeaningfulStrings(from path: String) -> String? {
@@ -2098,13 +2185,20 @@ public actor ScannerEngine {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe).prefix(maxBytes) else { return nil }
         if data.isEmpty { return nil }
 
-        let minLen = 6
+        let minLen = 4
         let maxOutLines = 5000
         let printable = CharacterSet(charactersIn: " -~\t")
         let bytes = Array(data)
 
         var lines: [String] = []
         lines.reserveCapacity(1024)
+        var seen = Set<String>()
+
+        func appendLine(_ line: String) {
+            if line.isEmpty || seen.contains(line) || lines.count >= maxOutLines { return }
+            seen.insert(line)
+            lines.append(line)
+        }
 
         // ASCII strings
         var ascii: [UInt8] = []
@@ -2115,14 +2209,13 @@ public actor ScannerEngine {
                 ascii.append(b)
             } else {
                 if ascii.count >= minLen, let s = String(bytes: ascii, encoding: .ascii) {
-                    lines.append("[ASCII] \(s)")
-                    if lines.count >= maxOutLines { break }
+                    appendLine("[ASCII] \(s)")
                 }
                 ascii.removeAll(keepingCapacity: true)
             }
         }
         if lines.count < maxOutLines, ascii.count >= minLen, let s = String(bytes: ascii, encoding: .ascii) {
-            lines.append("[ASCII] \(s)")
+            appendLine("[ASCII] \(s)")
         }
 
         // UTF-16LE-like strings (printable byte + 0x00 pattern)
@@ -2138,7 +2231,7 @@ public actor ScannerEngine {
                 } else {
                     if chars.count >= minLen {
                         let scalars = chars.compactMap(UnicodeScalar.init).map(Character.init)
-                        lines.append("[UTF16] " + String(scalars))
+                        appendLine("[UTF16LE] " + String(scalars))
                     }
                     chars.removeAll(keepingCapacity: true)
                 }
@@ -2146,7 +2239,32 @@ public actor ScannerEngine {
             }
             if lines.count < maxOutLines, chars.count >= minLen {
                 let scalars = chars.compactMap(UnicodeScalar.init).map(Character.init)
-                lines.append("[UTF16] " + String(scalars))
+                appendLine("[UTF16LE] " + String(scalars))
+            }
+        }
+
+        // UTF-16BE-like strings (0x00 + printable byte pattern)
+        if lines.count < maxOutLines {
+            var chars: [UInt16] = []
+            chars.reserveCapacity(128)
+            var i = 0
+            while i + 1 < bytes.count, lines.count < maxOutLines {
+                let hi = bytes[i]
+                let lo = bytes[i + 1]
+                if hi == 0x00, lo >= 0x20, lo <= 0x7E {
+                    chars.append(UInt16(lo))
+                } else {
+                    if chars.count >= minLen {
+                        let scalars = chars.compactMap(UnicodeScalar.init).map(Character.init)
+                        appendLine("[UTF16BE] " + String(scalars))
+                    }
+                    chars.removeAll(keepingCapacity: true)
+                }
+                i += 2
+            }
+            if lines.count < maxOutLines, chars.count >= minLen {
+                let scalars = chars.compactMap(UnicodeScalar.init).map(Character.init)
+                appendLine("[UTF16BE] " + String(scalars))
             }
         }
 
