@@ -1122,14 +1122,10 @@ public actor ScannerEngine {
     }
 
     private func shouldIncludeFile(withExtension ext: String, enabledTypes: Set<String>) -> Bool {
-        if ext.isEmpty || enabledTypes.contains(ext) { return true }
-
-        // Always include common container/binary artifacts so carving can discover embedded media.
-        let carveCandidates: Set<String> = [
-            "dat", "bin", "db", "sqlite", "sqlite3", "cache", "thumb", "thumbs", "blob", "tmp", "raw",
-            "plist", "bplist", "rem", "cod", "bbb", "ipd"
-        ]
-        return carveCandidates.contains(ext)
+        _ = ext
+        _ = enabledTypes
+        // Forensic mode: enumerate all regular files as scan candidates.
+        return true
     }
 
     // MARK: - Dedupe
