@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 import JuiceLabCore
 import AVKit
 import PDFKit
+import WebKit
 
 struct MainSplitView: View {
     @EnvironmentObject private var vm: AppViewModel
@@ -541,10 +542,13 @@ private struct PreviewView: View {
     @State private var previewText: String = ""
     @State private var pdfDocument: PDFDocument?
     @State private var avPlayer: AVPlayer?
+    @State private var htmlPreview: (html: String, baseURL: URL)?
 
     var body: some View {
         ZStack {
-            if let doc = pdfDocument {
+            if let html = htmlPreview {
+                HTMLPreviewView(html: html.html, baseURL: html.baseURL)
+            } else if let doc = pdfDocument {
                 PDFKitView(document: doc)
             } else if let player = avPlayer {
                 AVPlayerViewWrapper(player: player)
@@ -570,6 +574,7 @@ private struct PreviewView: View {
             self.previewText = ""
             self.pdfDocument = nil
             self.avPlayer = nil
+            self.htmlPreview = nil
         }
 
         let candidates = previewCandidatePaths()
@@ -616,6 +621,12 @@ private struct PreviewView: View {
             return
         }
 
+        let htmlExts: Set<String> = ["html", "htm"]
+        if htmlExts.contains(ext), let html = decodeText(data: data.prefix(256_000)) {
+            await MainActor.run { self.htmlPreview = (html: html, baseURL: url.deletingLastPathComponent()) }
+            return
+        }
+
         let videoExts: Set<String> = ["mp4", "mov", "mkv", "avi", "webm", "mpeg", "m2ts"]
         let audioExts: Set<String> = ["mp3", "wav", "flac", "ogg", "m4a", "aac", "alac"]
         if videoExts.contains(ext) || audioExts.contains(ext) {
@@ -637,9 +648,9 @@ private struct PreviewView: View {
             return
         }
 
-        let textExts: Set<String> = ["txt", "csv", "json", "xml", "html", "md"]
+        let textExts: Set<String> = ["txt", "csv", "json", "xml", "md", "log", "vcf"]
         if textExts.contains(ext) {
-            if let s = String(data: data.prefix(32_768), encoding: .utf8) ?? String(data: data.prefix(32_768), encoding: .ascii) {
+            if let s = decodeText(data: data.prefix(64_000)) {
                 await MainActor.run { self.previewText = s }
                 return
             }
@@ -706,6 +717,24 @@ private struct PreviewView: View {
         return text
     }
 
+    private func decodeText(data: Data.SubSequence) -> String? {
+        let bytes = Data(data)
+        if bytes.count >= 2 {
+            let b0 = bytes[bytes.startIndex]
+            let b1 = bytes[bytes.startIndex.advanced(by: 1)]
+            if b0 == 0xFF && b1 == 0xFE {
+                return String(data: bytes, encoding: .utf16LittleEndian)
+            }
+            if b0 == 0xFE && b1 == 0xFF {
+                return String(data: bytes, encoding: .utf16BigEndian)
+            }
+        }
+        return String(data: bytes, encoding: .utf8)
+            ?? String(data: bytes, encoding: .utf16LittleEndian)
+            ?? String(data: bytes, encoding: .utf16BigEndian)
+            ?? String(data: bytes, encoding: .ascii)
+    }
+
     private func previewCandidatePaths() -> [String] {
         var candidates: [String] = []
         if let output = item.outputPath { candidates.append(output) }
@@ -769,6 +798,22 @@ private struct AVPlayerViewWrapper: NSViewRepresentable {
     }
     func updateNSView(_ nsView: AVPlayerView, context: Context) {
         nsView.player = player
+    }
+}
+
+private struct HTMLPreviewView: NSViewRepresentable {
+    let html: String
+    let baseURL: URL?
+
+    func makeNSView(context: Context) -> WKWebView {
+        let webView = WKWebView(frame: .zero)
+        webView.setValue(false, forKey: "drawsBackground")
+        webView.loadHTMLString(html, baseURL: baseURL)
+        return webView
+    }
+
+    func updateNSView(_ nsView: WKWebView, context: Context) {
+        nsView.loadHTMLString(html, baseURL: baseURL)
     }
 }
 
