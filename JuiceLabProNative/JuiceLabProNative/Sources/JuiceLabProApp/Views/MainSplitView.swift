@@ -541,6 +541,7 @@ private struct PreviewView: View {
     @State private var nsImage: NSImage?
     @State private var previewText: String = ""
     @State private var htmlRawText: String = ""
+    @State private var htmlRenderedText: String = ""
     @State private var pdfDocument: PDFDocument?
     @State private var avPlayer: AVPlayer?
     @State private var htmlPreview: HTMLPreviewContent?
@@ -551,6 +552,17 @@ private struct PreviewView: View {
                 VStack(spacing: 8) {
                     HTMLPreviewView(content: html)
                         .frame(minHeight: 220)
+                    if !htmlRenderedText.isEmpty {
+                        Divider()
+                        ScrollView {
+                            Text(htmlRenderedText)
+                                .font(.system(size: 12))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(6)
+                        }
+                        .frame(minHeight: 90, maxHeight: 180)
+                    }
                     if !htmlRawText.isEmpty {
                         Divider()
                         ScrollView {
@@ -588,6 +600,7 @@ private struct PreviewView: View {
             self.nsImage = nil
             self.previewText = ""
             self.htmlRawText = ""
+            self.htmlRenderedText = ""
             self.pdfDocument = nil
             self.avPlayer = nil
             self.htmlPreview = nil
@@ -647,6 +660,7 @@ private struct PreviewView: View {
             await MainActor.run {
                 self.htmlPreview = .inline(html: rendered, baseURL: url.deletingLastPathComponent())
                 self.htmlRawText = decoded
+                self.htmlRenderedText = extractReadableHTMLText(from: decoded) ?? ""
             }
             return
         }
@@ -807,6 +821,24 @@ private struct PreviewView: View {
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    private func extractReadableHTMLText(from html: String) -> String? {
+        guard let data = html.data(using: .utf8),
+              let attributed = try? NSAttributedString(
+                data: data,
+                options: [
+                    .documentType: NSAttributedString.DocumentType.html,
+                    .characterEncoding: String.Encoding.utf8.rawValue
+                ],
+                documentAttributes: nil
+              ) else {
+            return nil
+        }
+        let cleaned = attributed.string
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     private func previewCandidatePaths() -> [String] {
