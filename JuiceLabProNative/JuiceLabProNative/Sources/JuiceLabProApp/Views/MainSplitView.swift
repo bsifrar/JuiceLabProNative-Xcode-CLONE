@@ -45,6 +45,7 @@ struct MainSplitView: View {
             }
         }
         .tint(Color(red: 0.45, green: 0.34, blue: 1.00))
+        .preferredColorScheme(.dark)
         .searchable(text: $vm.query, placement: .toolbar)
     }
 }
@@ -87,62 +88,65 @@ private struct ToolbarView: View {
     @State private var showClearResultsDialog = false
 
     var body: some View {
-        HStack {
-            Picker("Mode", selection: $vm.settings.performanceMode) {
-                Text("Fast").tag(PerformanceMode.fast)
-                Text("Balanced").tag(PerformanceMode.balanced)
-                Text("Thorough").tag(PerformanceMode.thorough)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 320)
+        ScrollView(.horizontal, showsIndicators: true) {
+            HStack {
+                Picker("Mode", selection: $vm.settings.performanceMode) {
+                    Text("Fast").tag(PerformanceMode.fast)
+                    Text("Balanced").tag(PerformanceMode.balanced)
+                    Text("Thorough").tag(PerformanceMode.thorough)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 320)
 
-            Toggle("AI", isOn: $vm.settings.enableAI)
-                .toggleStyle(.switch)
-                .help("Enable AI classification")
+                Toggle("AI", isOn: $vm.settings.enableAI)
+                    .toggleStyle(.switch)
+                    .help("Enable AI classification")
 
-            Toggle(
-                "Dedupe",
-                isOn: Binding(
-                    get: { vm.settings.dedupeMode != .off },
-                    set: { vm.settings.dedupeMode = $0 ? .exactBytes : .off }
+                Toggle(
+                    "Dedupe",
+                    isOn: Binding(
+                        get: { vm.settings.dedupeMode != .off },
+                        set: { vm.settings.dedupeMode = $0 ? .exactBytes : .off }
+                    )
                 )
-            )
-            .toggleStyle(.switch)
-            .help("Remove exact byte-identical duplicates only")
+                .toggleStyle(.switch)
+                .help("Remove exact byte-identical duplicates only")
 
-            Spacer()
+                Spacer()
 
-            Button("Add Sources…") {
-                pickSources()
-            }
+                Button("Add Sources…") {
+                    pickSources()
+                }
 
-            Button("Clear Sources") {
-                vm.clearSources()
-            }
-            .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
-
-            Button("Start") { vm.startScan() }
-                .buttonStyle(.borderedProminent)
+                Button("Clear Sources") {
+                    vm.clearSources()
+                }
                 .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
 
-            Button("Stop") { vm.stopScan() }
-                .disabled(!vm.isScanning)
-            
-            Button("Reveal Run Folder") {
-                if let run = vm.activeRun {
-                    let url = URL(fileURLWithPath: run.outputRoot)
-                    NSWorkspace.shared.open(url)
-                } else {
-                    let url = URL(fileURLWithPath: vm.settings.outputFolder)
-                    NSWorkspace.shared.open(url)
-                }
-            }
+                Button("Start") { vm.startScan() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
 
-            Button("Clear Results") {
-                showClearResultsDialog = true
+                Button("Stop") { vm.stopScan() }
+                    .disabled(!vm.isScanning)
+
+                Button("Reveal Run Folder") {
+                    if let run = vm.activeRun {
+                        let url = URL(fileURLWithPath: run.outputRoot)
+                        NSWorkspace.shared.open(url)
+                    } else {
+                        let url = URL(fileURLWithPath: vm.settings.outputFolder)
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+
+                Button("Clear Results") {
+                    showClearResultsDialog = true
+                }
+                .disabled(vm.isScanning || vm.runs.isEmpty)
+                .foregroundStyle(.red)
             }
-            .disabled(vm.isScanning || vm.runs.isEmpty)
-            .foregroundStyle(.red)
+            .frame(minWidth: 1100, maxWidth: .infinity, alignment: .leading)
         }
         .confirmationDialog("Clear all results and run history?", isPresented: $showClearResultsDialog, titleVisibility: .visible) {
             Button("Clear Results", role: .destructive) {
