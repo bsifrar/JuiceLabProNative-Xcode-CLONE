@@ -10,8 +10,8 @@ struct CardSurface: ViewModifier {
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color(nsColor: .windowBackgroundColor).opacity(0.9),
-                                Color(nsColor: .underPageBackgroundColor).opacity(0.82)
+                                Color(red: 0.08, green: 0.09, blue: 0.17).opacity(0.96),
+                                Color(red: 0.04, green: 0.05, blue: 0.11).opacity(0.94)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -19,10 +19,21 @@ struct CardSurface: ViewModifier {
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 16)
-                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                            .stroke(
+                                LinearGradient(
+                                    colors: [
+                                        Color(red: 0.42, green: 0.34, blue: 1.00).opacity(0.55),
+                                        Color.white.opacity(0.08)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 1
+                            )
                     )
             )
-            .shadow(color: .black.opacity(0.22), radius: 12, x: 0, y: 8)
+            .shadow(color: Color(red: 0.35, green: 0.28, blue: 1.0).opacity(0.20), radius: 14, x: 0, y: 8)
+            .shadow(color: .black.opacity(0.38), radius: 18, x: 0, y: 14)
     }
 }
 

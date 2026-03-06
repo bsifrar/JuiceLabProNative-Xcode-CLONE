@@ -35,7 +35,38 @@ public enum PerformanceMode: String, Codable, CaseIterable, Sendable {
 }
 
 public enum DedupeMode: String, Codable, CaseIterable, Sendable {
-    case off, hash, hashAndSize
+    case off
+    case exactBytes
+    case hash
+    case hashAndSize
+}
+
+public struct DedupeRemoval: Codable, Sendable {
+    public var reason: String
+    public var dedupeKey: String
+    public var keptSourcePath: String
+    public var removedSourcePath: String
+    public var keptOffset: Int
+    public var removedOffset: Int
+    public var length: Int
+
+    public init(
+        reason: String,
+        dedupeKey: String,
+        keptSourcePath: String,
+        removedSourcePath: String,
+        keptOffset: Int,
+        removedOffset: Int,
+        length: Int
+    ) {
+        self.reason = reason
+        self.dedupeKey = dedupeKey
+        self.keptSourcePath = keptSourcePath
+        self.removedSourcePath = removedSourcePath
+        self.keptOffset = keptOffset
+        self.removedOffset = removedOffset
+        self.length = length
+    }
 }
 
 public enum OrganizationScheme: String, Codable, CaseIterable, Sendable {
@@ -342,7 +373,7 @@ public struct ScanSettings: Codable, Sendable {
             return downloadsPath + "/Extracted"
         }(),
         organizationScheme: OrganizationScheme = .bySource,
-        dedupeMode: DedupeMode = .off,
+        dedupeMode: DedupeMode = .exactBytes,
         keepHighestQualityImage: Bool = true,
         maxFileSizeMB: Int? = nil,
         performanceMode: PerformanceMode = .balanced,
@@ -357,7 +388,7 @@ public struct ScanSettings: Codable, Sendable {
             "dat", "bin", "raw", "tmp", "blob", "cache", "thumb", "thumbs",
             "rem", "cod", "bbb", "ipd"
         ],
-        enableAI: Bool = false,
+        enableAI: Bool = true,
         aiModelName: String = "NSFWReasons",
         aiComputePreference: AIComputePreference = .systemDefault,
         aiThresholdPreset: String? = NSFWThresholdPreset.forensicBalanced.rawValue,
@@ -401,6 +432,7 @@ public struct ScanRun: Identifiable, Codable, Sendable {
     public var outputRoot: String
 
     public var items: [FoundItem]
+    public var dedupeRemoved: [DedupeRemoval]
     public var warnings: [String]
     public var mode: PerformanceMode
     public var forensic: ForensicSummary
@@ -415,6 +447,7 @@ public struct ScanRun: Identifiable, Codable, Sendable {
         settingsFingerprint: String,
         outputRoot: String,
         items: [FoundItem] = [],
+        dedupeRemoved: [DedupeRemoval] = [],
         warnings: [String] = [],
         mode: PerformanceMode = .balanced,
         forensic: ForensicSummary = ForensicSummary()
@@ -428,6 +461,7 @@ public struct ScanRun: Identifiable, Codable, Sendable {
         self.settingsFingerprint = settingsFingerprint
         self.outputRoot = outputRoot
         self.items = items
+        self.dedupeRemoved = dedupeRemoved
         self.warnings = warnings
         self.mode = mode
         self.forensic = forensic

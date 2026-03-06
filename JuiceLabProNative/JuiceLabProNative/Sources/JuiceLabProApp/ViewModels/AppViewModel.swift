@@ -16,7 +16,7 @@ final class AppViewModel: ObservableObject {
     }
 
     @Published var route: Route? = .results
-    @Published var settings = ScanSettings(enableAI: false)
+    @Published var settings = ScanSettings(dedupeMode: .exactBytes, enableAI: true)
     @Published var runs: [ScanRun] = []
     @Published var selectedRunID: UUID?
     @Published var selectedItem: FoundItem?

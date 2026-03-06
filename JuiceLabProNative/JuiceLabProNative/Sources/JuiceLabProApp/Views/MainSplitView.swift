@@ -10,27 +10,41 @@ struct MainSplitView: View {
     @EnvironmentObject private var vm: AppViewModel
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView()
-        } content: {
-            Group {
-                if vm.route == .settings {
-                    SettingsPanelView()
-                } else if vm.route == .forensic {
-                    ForensicDashboardView()
-                } else {
-                    VStack(spacing: 12) {
-                        ToolbarView()
-                        DropAndStatsView()
-                        ResultsTableView(items: vm.filteredItems)
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.03, green: 0.04, blue: 0.11),
+                    Color(red: 0.02, green: 0.02, blue: 0.07),
+                    Color(red: 0.00, green: 0.00, blue: 0.03)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            NavigationSplitView {
+                SidebarView()
+            } content: {
+                Group {
+                    if vm.route == .settings {
+                        SettingsPanelView()
+                    } else if vm.route == .forensic {
+                        ForensicDashboardView()
+                    } else {
+                        VStack(spacing: 12) {
+                            ToolbarView()
+                            DropAndStatsView()
+                            ResultsTableView(items: vm.filteredItems)
+                        }
                     }
                 }
-            }
-            .padding()
-        } detail: {
-            InspectorView(item: vm.selectedItem)
                 .padding()
+            } detail: {
+                InspectorView(item: vm.selectedItem)
+                    .padding()
+            }
         }
+        .tint(Color(red: 0.45, green: 0.34, blue: 1.00))
         .searchable(text: $vm.query, placement: .toolbar)
     }
 }
@@ -81,6 +95,20 @@ private struct ToolbarView: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 320)
+
+            Toggle("AI", isOn: $vm.settings.enableAI)
+                .toggleStyle(.switch)
+                .help("Enable AI classification")
+
+            Toggle(
+                "Dedupe",
+                isOn: Binding(
+                    get: { vm.settings.dedupeMode != .off },
+                    set: { vm.settings.dedupeMode = $0 ? .exactBytes : .off }
+                )
+            )
+            .toggleStyle(.switch)
+            .help("Remove exact byte-identical duplicates only")
 
             Spacer()
 
@@ -659,8 +687,9 @@ private struct SettingsPanelView: View {
             }
             Picker("Dedupe", selection: $vm.settings.dedupeMode) {
                 Text("Off").tag(DedupeMode.off)
-                Text("Hash").tag(DedupeMode.hash)
-                Text("Hash + Size").tag(DedupeMode.hashAndSize)
+                Text("Exact Bytes (Recommended)").tag(DedupeMode.exactBytes)
+                Text("Legacy Hash").tag(DedupeMode.hash)
+                Text("Legacy Hash + Size").tag(DedupeMode.hashAndSize)
             }
             Toggle("Keep highest quality image duplicates", isOn: $vm.settings.keepHighestQualityImage)
             TextField("Max file size MB (optional)", value: Binding(
@@ -859,6 +888,12 @@ private struct ForensicDashboardView: View {
                                 openIfExists(path: pathInRun(run.outputRoot, "binary_intelligence/index.md"))
                             }
                             .disabled(!fileExists(pathInRun(run.outputRoot, "binary_intelligence/index.md")))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Button("Open Dedupe Report") {
+                                openIfExists(path: pathInRun(run.outputRoot, "dedupe/dedupe_report.md"))
+                            }
+                            .disabled(!fileExists(pathInRun(run.outputRoot, "dedupe/dedupe_report.md")))
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .buttonStyle(.bordered)

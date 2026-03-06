@@ -285,7 +285,15 @@ public actor ScannerEngine {
             return StageTiming(stage: stage, files: files, totalMS: total, avgMS: avg)
         }
 
-        run.items = dedupe(items: run.items, mode: settings.dedupeMode)
+        let dedupeOutcome = dedupe(items: run.items, mode: settings.dedupeMode)
+        run.items = dedupeOutcome.items
+        run.dedupeRemoved = dedupeOutcome.removed
+        if !dedupeOutcome.removed.isEmpty {
+            var metrics = run.forensic.metrics ?? [:]
+            metrics["deduped_items", default: 0] += dedupeOutcome.removed.count
+            run.forensic.metrics = metrics
+            run.warnings.append("Dedupe removed \(dedupeOutcome.removed.count) exact-byte duplicates.")
+        }
         run.completedAt = .now
         return run
     }
@@ -316,6 +324,7 @@ public actor ScannerEngine {
         _ = generateAgentOutputs(for: updated, at: runRoot)
         _ = generateCoverageAudit(for: updated, at: runRoot)
         _ = generateBinaryIntelligenceArtifacts(for: updated, at: runRoot)
+        _ = generateDedupeReport(for: updated, at: runRoot)
         _ = generateRunIndexHTML(for: updated, at: runRoot)
         _ = try generateHeatmaps(for: &updated, at: runRoot)
 
@@ -387,6 +396,7 @@ public actor ScannerEngine {
         _ = generateAgentOutputs(for: updated, at: runRoot)
         _ = generateCoverageAudit(for: updated, at: runRoot)
         _ = generateBinaryIntelligenceArtifacts(for: updated, at: runRoot)
+        _ = generateDedupeReport(for: updated, at: runRoot)
         _ = generateRunIndexHTML(for: updated, at: runRoot)
         try writeJSON(updated.forensic, to: runRoot.appendingPathComponent("run_forensic.json"))
         try writeJSON(updated.items, to: runRoot.appendingPathComponent("run_items.json"))
@@ -407,6 +417,7 @@ public actor ScannerEngine {
         _ = generateAgentOutputs(for: updated, at: runRoot)
         _ = generateCoverageAudit(for: updated, at: runRoot)
         _ = generateBinaryIntelligenceArtifacts(for: updated, at: runRoot)
+        _ = generateDedupeReport(for: updated, at: runRoot)
         _ = generateRunIndexHTML(for: updated, at: runRoot)
         try writeJSON(updated.forensic, to: runRoot.appendingPathComponent("run_forensic.json"))
         try writeJSON(updated.items, to: runRoot.appendingPathComponent("run_items.json"))
@@ -1116,36 +1127,96 @@ public actor ScannerEngine {
 
     // MARK: - Dedupe
 
-    private func dedupe(items: [FoundItem], mode: DedupeMode) -> [FoundItem] {
-        guard mode != .off else { return items }
+    private struct DedupeOutcome {
+        var items: [FoundItem]
+        var removed: [DedupeRemoval]
+    }
 
-        switch mode {
-        case .off:
-            return items
-        case .hash:
-            var seen = Set<String>()
-            var out: [FoundItem] = []
-            for item in items {
-                let key = item.contentHash ?? item.sourcePath
-                if seen.contains(key) { continue }
-                seen.insert(key)
+    private func dedupe(items: [FoundItem], mode: DedupeMode) -> DedupeOutcome {
+        guard mode != .off else { return DedupeOutcome(items: items, removed: []) }
+
+        var seenByKey: [String: FoundItem] = [:]
+        var out: [FoundItem] = []
+        var removed: [DedupeRemoval] = []
+        var fileHashCache: [String: String] = [:]
+        var segmentHashCache: [String: String] = [:]
+
+        for item in items {
+            guard let key = dedupeKey(
+                for: item,
+                mode: mode,
+                fileHashCache: &fileHashCache,
+                segmentHashCache: &segmentHashCache
+            ) else {
+                // If we cannot prove exact byte equality, keep the item.
                 out.append(item)
+                continue
             }
-            return out
-        case .hashAndSize:
-            var seen = Set<String>()
-            var out: [FoundItem] = []
-            for item in items {
-                let size = (try? URL(fileURLWithPath: item.sourcePath)
-                    .resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                let hash = item.contentHash ?? item.sourcePath
-                let key = "\(size)|\(hash)"
-                if seen.contains(key) { continue }
-                seen.insert(key)
-                out.append(item)
+
+            if let kept = seenByKey[key] {
+                removed.append(
+                    DedupeRemoval(
+                        reason: "exact_bytes",
+                        dedupeKey: key,
+                        keptSourcePath: kept.sourcePath,
+                        removedSourcePath: item.sourcePath,
+                        keptOffset: kept.offset,
+                        removedOffset: item.offset,
+                        length: item.length
+                    )
+                )
+                continue
             }
-            return out
+
+            seenByKey[key] = item
+            out.append(item)
         }
+
+        return DedupeOutcome(items: out, removed: removed)
+    }
+
+    private func dedupeKey(
+        for item: FoundItem,
+        mode: DedupeMode,
+        fileHashCache: inout [String: String],
+        segmentHashCache: inout [String: String]
+    ) -> String? {
+        let exactModes: Set<DedupeMode> = [.exactBytes, .hash, .hashAndSize]
+        guard exactModes.contains(mode) else { return nil }
+
+        if let contentHash = item.contentHash, !contentHash.isEmpty {
+            return "len:\(item.length)|sha:\(contentHash)"
+        }
+
+        let source = URL(fileURLWithPath: item.sourcePath)
+        let fileSize = (try? source.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+
+        if item.offset == 0, item.length > 0, item.length == fileSize {
+            if let cached = fileHashCache[source.path] {
+                return "len:\(item.length)|sha:\(cached)"
+            }
+            guard let data = try? Data(contentsOf: source, options: .mappedIfSafe) else { return nil }
+            let hash = Hashing.hexSHA256(data)
+            fileHashCache[source.path] = hash
+            return "len:\(item.length)|sha:\(hash)"
+        }
+
+        // Carved segments: hash exact byte range to avoid false dedupe.
+        if item.offset >= 0, item.length > 0 {
+            let segKey = "\(source.path)|\(item.offset)|\(item.length)"
+            if let cached = segmentHashCache[segKey] {
+                return "len:\(item.length)|sha:\(cached)"
+            }
+            guard let data = try? Data(contentsOf: source, options: .mappedIfSafe) else { return nil }
+            let end = item.offset + item.length
+            guard end <= data.count else { return nil }
+            let seg = data.subdata(in: item.offset..<end)
+            let hash = Hashing.hexSHA256(seg)
+            segmentHashCache[segKey] = hash
+            return "len:\(item.length)|sha:\(hash)"
+        }
+
+        return nil
     }
 
     // MARK: - Rate helpers
@@ -1749,6 +1820,7 @@ public actor ScannerEngine {
             <a href="evidence_intelligence/actions/actions_report.md">Agent Actions</a>
             <a href="coverage/coverage_report.md">Coverage Audit</a>
             <a href="binary_intelligence/index.md">Binary Intelligence</a>
+            <a href="dedupe/dedupe_report.md">Dedupe Report</a>
             <a href="run_forensic.json">Forensic JSON</a>
             <a href="run_items.json">Items JSON</a>
           </div>
@@ -2611,6 +2683,32 @@ public actor ScannerEngine {
             return fileCount + 1
         } catch {
             return fileCount
+        }
+    }
+
+    private func generateDedupeReport(for run: ScanRun, at runRoot: URL) -> Int {
+        let outDir = runRoot.appendingPathComponent("dedupe", isDirectory: true)
+        try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        let removed = run.dedupeRemoved
+        let md = """
+        # Dedupe Report
+        - Mode: \(run.settings.dedupeMode.rawValue)
+        - Removed duplicates: \(removed.count)
+        - Rule: Only exact byte-identical content (hash+length) is removed.
+
+        ## Removed Items
+        \(removed.isEmpty ? "- none" : removed.prefix(500).map { rec in
+            "- kept=\(URL(fileURLWithPath: rec.keptSourcePath).lastPathComponent)@0x\(String(rec.keptOffset, radix: 16)) removed=\(URL(fileURLWithPath: rec.removedSourcePath).lastPathComponent)@0x\(String(rec.removedOffset, radix: 16)) length=\(rec.length)"
+        }.joined(separator: "\n"))
+        """
+
+        do {
+            try md.write(to: outDir.appendingPathComponent("dedupe_report.md"), atomically: true, encoding: .utf8)
+            try writeJSON(removed, to: outDir.appendingPathComponent("dedupe_removed.json"))
+            return 2
+        } catch {
+            return 0
         }
     }
 
