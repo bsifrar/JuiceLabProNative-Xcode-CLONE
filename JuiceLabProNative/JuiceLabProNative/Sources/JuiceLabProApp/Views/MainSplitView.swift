@@ -606,9 +606,46 @@ private struct ForensicDashboardView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
+                HStack {
+                    SummaryCard(title: "AI Safe", value: "\(aiCount(.none, in: f.analyzerResults))")
+                    SummaryCard(title: "AI Suggestive", value: "\(aiCount(.suggestive, in: f.analyzerResults))")
+                    SummaryCard(title: "AI Explicit", value: "\(aiCount(.explicit, in: f.analyzerResults))")
+                    SummaryCard(title: "AI Unknown", value: "\(aiCount(.unknown, in: f.analyzerResults))")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                GroupBox("Forensic Artifacts") {
+                    HStack(spacing: 10) {
+                        Button("Open Recovered URLs") {
+                            openIfExists(path: pathInRun(run.outputRoot, "URLs/URLs.html"))
+                        }
+                        .disabled(!fileExists(pathInRun(run.outputRoot, "URLs/URLs.html")))
+
+                        Button("Open All Text") {
+                            openIfExists(path: pathInRun(run.outputRoot, "txt/All The Text.txt"))
+                        }
+                        .disabled(!fileExists(pathInRun(run.outputRoot, "txt/All The Text.txt")))
+
+                        Button("Open Run Report") {
+                            openIfExists(path: pathInRun(run.outputRoot, "index.html"))
+                        }
+                        .disabled(!fileExists(pathInRun(run.outputRoot, "index.html")))
+                    }
+                    .buttonStyle(.bordered)
+                }
+
                 GroupBox("Keys Found") {
                     if f.keyFiles.isEmpty { Text("None").foregroundStyle(.secondary) }
                     else { ForEach(f.keyFiles, id: \.self) { Text($0).lineLimit(1) } }
+                }
+
+                GroupBox("AI Reason Tags") {
+                    let tags = topReasonTags(in: f.analyzerResults)
+                    if tags.isEmpty {
+                        Text("No reason tags yet.").foregroundStyle(.secondary)
+                    } else {
+                        FlowTagView(tags: tags)
+                    }
                 }
 
                 GroupBox("Analyzer Outputs") {
@@ -652,6 +689,64 @@ private struct ForensicDashboardView: View {
         }
         .cardSurface()
         .padding(.vertical)
+    }
+
+    private func aiCount(_ severity: NSFWSeverity, in results: [AnalyzerResult]) -> Int {
+        results.filter { $0.nsfwSeverity == severity }.count
+    }
+
+    private func pathInRun(_ runRoot: String, _ relative: String) -> String {
+        URL(fileURLWithPath: runRoot, isDirectory: true)
+            .appendingPathComponent(relative).path
+    }
+
+    private func fileExists(_ path: String) -> Bool {
+        FileManager.default.fileExists(atPath: path)
+    }
+
+    private func openIfExists(path: String) {
+        guard fileExists(path) else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    private func topReasonTags(in results: [AnalyzerResult]) -> [(String, Int)] {
+        var counts: [String: Int] = [:]
+        for result in results {
+            for det in result.reasonDetections ?? [] {
+                let key = det.reason.rawValue
+                counts[key, default: 0] += 1
+            }
+        }
+        return counts
+            .sorted { lhs, rhs in
+                if lhs.value == rhs.value { return lhs.key < rhs.key }
+                return lhs.value > rhs.value
+            }
+            .prefix(18)
+            .map { ($0.key, $0.value) }
+    }
+}
+
+private struct FlowTagView: View {
+    let tags: [(String, Int)]
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
+            ForEach(tags, id: \.0) { tag, count in
+                HStack(spacing: 6) {
+                    Text(tag.replacingOccurrences(of: "_", with: " ").capitalized)
+                    Text("\(count)")
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.gray.opacity(0.18)))
+                }
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.10)))
+            }
+        }
     }
 }
 
