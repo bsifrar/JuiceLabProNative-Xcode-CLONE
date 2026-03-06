@@ -88,44 +88,51 @@ private struct ToolbarView: View {
     @State private var showClearResultsDialog = false
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: true) {
-            HStack {
-                Picker("Mode", selection: $vm.settings.performanceMode) {
-                    Text("Fast").tag(PerformanceMode.fast)
-                    Text("Balanced").tag(PerformanceMode.balanced)
-                    Text("Thorough").tag(PerformanceMode.thorough)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 320)
+        HStack(spacing: 12) {
+            ScrollView(.horizontal, showsIndicators: true) {
+                HStack {
+                    Picker("Mode", selection: $vm.settings.performanceMode) {
+                        Text("Fast").tag(PerformanceMode.fast)
+                        Text("Balanced").tag(PerformanceMode.balanced)
+                        Text("Thorough").tag(PerformanceMode.thorough)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 320)
 
-                Toggle("AI", isOn: $vm.settings.enableAI)
-                    .toggleStyle(.switch)
-                    .help("Enable AI classification")
+                    Toggle("AI", isOn: $vm.settings.enableAI)
+                        .toggleStyle(.switch)
+                        .help("Enable AI classification")
 
-                Toggle(
-                    "Dedupe",
-                    isOn: Binding(
-                        get: { vm.settings.dedupeMode != .off },
-                        set: { vm.settings.dedupeMode = $0 ? .exactBytes : .off }
+                    Toggle(
+                        "Dedupe",
+                        isOn: Binding(
+                            get: { vm.settings.dedupeMode != .off },
+                            set: { vm.settings.dedupeMode = $0 ? .exactBytes : .off }
+                        )
                     )
-                )
-                .toggleStyle(.switch)
-                .help("Remove exact byte-identical duplicates only")
+                    .toggleStyle(.switch)
+                    .help("Remove exact byte-identical duplicates only")
 
-                Spacer()
+                    Button("Add Sources…") {
+                        pickSources()
+                    }
 
-                Button("Add Sources…") {
-                    pickSources()
-                }
-
-                Button("Clear Sources") {
-                    vm.clearSources()
-                }
-                .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
-
-                Button("Start") { vm.startScan() }
-                    .buttonStyle(.borderedProminent)
+                    Button("Clear Sources") {
+                        vm.clearSources()
+                    }
                     .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 8) {
+                Button {
+                    vm.startScan()
+                } label: {
+                    Label("Start Scan", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
 
                 Button("Stop") { vm.stopScan() }
                     .disabled(!vm.isScanning)
@@ -146,7 +153,6 @@ private struct ToolbarView: View {
                 .disabled(vm.isScanning || vm.runs.isEmpty)
                 .foregroundStyle(.red)
             }
-            .frame(minWidth: 1100, maxWidth: .infinity, alignment: .leading)
         }
         .confirmationDialog("Clear all results and run history?", isPresented: $showClearResultsDialog, titleVisibility: .visible) {
             Button("Clear Results", role: .destructive) {
@@ -184,6 +190,14 @@ private struct DropAndStatsView: View {
                 Text("Sources: \(vm.droppedURLs.count)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Button {
+                    vm.startScan()
+                } label: {
+                    Label("Start Scan", systemImage: "play.fill")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(vm.isScanning || vm.droppedURLs.isEmpty)
                 if vm.droppedURLs.isEmpty {
                     Text("No sources selected.")
                         .font(.caption)
@@ -260,29 +274,9 @@ private struct DropAndStatsView: View {
 private struct ResultsTableView: View {
     @EnvironmentObject private var vm: AppViewModel
     let items: [FoundItem]
-    @State private var sortedItems: [FoundItem] = []
-    @State private var sortField: SortField = .type
-    @State private var sortAscending: Bool = true
-
-    private enum SortField: String, CaseIterable, Identifiable {
-        case type
-        case source
-        case offset
-        case validation
-        case size
-
-        var id: String { rawValue }
-
-        var title: String {
-            switch self {
-            case .type: return "Type"
-            case .source: return "Source"
-            case .offset: return "Offset"
-            case .validation: return "Validation"
-            case .size: return "Size"
-            }
-        }
-    }
+    @State private var sortOrder: [KeyPathComparator<FoundItem>] = [
+        .init(\.detectedType, order: .forward)
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -300,80 +294,35 @@ private struct ResultsTableView: View {
                     }
                 }
             }
-            HStack(spacing: 8) {
-                Text("Sort by:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Picker("Sort by", selection: $sortField) {
-                    ForEach(SortField.allCases) { field in
-                        Text(field.title).tag(field)
-                    }
-                }
-                .pickerStyle(.menu)
-                Toggle("Ascending", isOn: $sortAscending)
-                    .toggleStyle(.checkbox)
-                    .font(.caption)
-            }
             resultsTable
         }
         .cardSurface()
     }
 
     private var resultsTable: some View {
-        Table(sortedItems, selection: Binding(
+        Table(items, selection: Binding(
             get: { vm.selectedItem?.id },
             set: { selectedID in
-                vm.selectedItem = sortedItems.first(where: { $0.id == selectedID })
+                vm.selectedItem = items.first(where: { $0.id == selectedID })
             })
+        , sortOrder: $sortOrder
         ) {
-            TableColumn("Type") { item in
+            TableColumn("Type", value: \.detectedType) { item in
                 Text(item.detectedType.uppercased())
             }
-            TableColumn("Source") { item in
+            TableColumn("Source", value: \.sourceDisplayName) { item in
                 Text(item.sourceDisplayName)
             }
-            TableColumn("Offset") { item in
+            TableColumn("Offset", value: \.offset) { item in
                 Text(String(format: "0x%X", item.offset))
             }
-            TableColumn("Validation") { item in
+            TableColumn("Validation", value: \.validationText) { item in
                 Text(item.validationText.capitalized)
             }
-            TableColumn("Size") { item in
+            TableColumn("Size", value: \.length) { item in
                 Text(ByteCountFormatter.string(fromByteCount: Int64(item.length), countStyle: .file))
             }
         }
-        .onAppear {
-            applySort()
-        }
-        .onChange(of: items) { _, _ in
-            applySort()
-        }
-        .onChange(of: sortField) { _, _ in
-            applySort()
-        }
-        .onChange(of: sortAscending) { _, _ in
-            applySort()
-        }
-    }
-
-    private func applySort() {
-        let sorted = items.sorted { lhs, rhs in
-            let result: Bool
-            switch sortField {
-            case .type:
-                result = lhs.detectedType.localizedCaseInsensitiveCompare(rhs.detectedType) == .orderedAscending
-            case .source:
-                result = lhs.sourceDisplayName.localizedCaseInsensitiveCompare(rhs.sourceDisplayName) == .orderedAscending
-            case .offset:
-                result = lhs.offset < rhs.offset
-            case .validation:
-                result = lhs.validationText.localizedCaseInsensitiveCompare(rhs.validationText) == .orderedAscending
-            case .size:
-                result = lhs.length < rhs.length
-            }
-            return sortAscending ? result : !result
-        }
-        sortedItems = sorted
     }
 }
 
