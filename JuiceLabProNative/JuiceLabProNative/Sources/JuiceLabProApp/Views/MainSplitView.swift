@@ -210,7 +210,7 @@ private struct SidebarView: View {
                         vm.route = .results
                     }
                 )
-                .id(runKey)
+                .id("\(run.id.uuidString)-\(idx)")
                 .listRowInsets(EdgeInsets(top: 3, leading: 6, bottom: 3, trailing: 6))
                 .listRowBackground(
                     RoundedRectangle(cornerRadius: 10)
@@ -221,18 +221,20 @@ private struct SidebarView: View {
     }
 
     private func isRunSelected(_ run: ScanRun) -> Bool {
-        if let selectedRunKey = vm.selectedRunKey {
-            return vm.runKey(run) == selectedRunKey
+        if let selectedRunID = vm.selectedRunID {
+            return run.id == selectedRunID
         }
         guard let first = vm.runs.first else { return false }
-        return vm.runKey(run) == vm.runKey(first)
+        return run.id == first.id
     }
 
     private func scrollToRun(_ runKey: String, using proxy: ScrollViewProxy) {
         guard lastScrolledRunKey != runKey else { return }
         lastScrolledRunKey = runKey
+        guard let idx = vm.runs.firstIndex(where: { vm.runKey($0) == runKey }) else { return }
+        let rowID = "\(vm.runs[idx].id.uuidString)-\(idx)"
         DispatchQueue.main.async {
-            proxy.scrollTo(runKey, anchor: .center)
+            proxy.scrollTo(rowID, anchor: .center)
         }
     }
 
@@ -591,6 +593,13 @@ private struct ResultsTableView: View {
                             .padding(.vertical, 6)
                             .background(Capsule().fill(Color.gray.opacity(0.20)))
                     }
+                    if let graphPivot = vm.activeGraphPivotLabel {
+                        Label("Graph: \(graphPivot)", systemImage: "point.3.connected.trianglepath.dotted")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Capsule().fill(Color.orange.opacity(0.20)))
+                    }
                     Button("Clear Forensic Filter") {
                         vm.clearForensicFacet()
                     }
@@ -598,15 +607,19 @@ private struct ResultsTableView: View {
                     .disabled(vm.activeForensicFacet == nil)
 
                     Button("Clear Search") {
-                        vm.query = ""
+                        vm.clearSearch()
                     }
                     .buttonStyle(.bordered)
                     .disabled(vm.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
+                    Button("Clear Pivot") {
+                        vm.clearGraphPivot()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(vm.activeGraphPivotLabel == nil)
+
                     Button("Clear All") {
-                        vm.clearForensicFacet()
-                        vm.query = ""
-                        vm.statusMessage = "Cleared active filters."
+                        vm.clearAllFilters()
                     }
                     .buttonStyle(.borderedProminent)
                     Spacer(minLength: 0)
@@ -676,7 +689,9 @@ private struct ResultsTableView: View {
     }
 
     private var hasActiveSearchFilters: Bool {
-        vm.activeForensicFacet != nil || !vm.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        vm.activeForensicFacet != nil
+            || !vm.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || vm.activeGraphPivotLabel != nil
     }
 
     private var resultsTable: some View {
@@ -895,7 +910,7 @@ private struct InspectorView: View {
     }
 
     private func analyzerResult(for item: FoundItem) -> AnalyzerResult? {
-        vm.activeRun?.forensic.analyzerResults.first(where: { $0.sourcePath == item.sourcePath })
+        vm.analyzerResult(for: item)
     }
 
     private func flagReasonSummary(for result: AnalyzerResult) -> String? {
@@ -1622,73 +1637,72 @@ private struct ForensicDashboardView: View {
                 Text("Forensic Summary").font(.title3.bold())
                 if let run = vm.activeRun {
                     let f = run.forensic
-                    let metrics = f.metrics ?? [:]
                     HStack {
-                        SummaryCard(title: ".REM Files", value: "\(f.remCount)") {
+                        SummaryCard(title: ".REM Files", value: "\(vm.forensicCount(for: .remFiles))") {
                             applyDashboardFilter(.remFiles, label: ".REM Files")
                         }
-                        SummaryCard(title: "Media Recovered", value: "\(f.mediaCount)") {
+                        SummaryCard(title: "Media Recovered", value: "\(vm.forensicCount(for: .mediaRecovered))") {
                             applyDashboardFilter(.mediaRecovered, label: "Media Recovered")
                         }
-                        SummaryCard(title: "Possible Decryptable DBs", value: "\(f.possibleDecryptableDBs)") {
+                        SummaryCard(title: "Possible Decryptable DBs", value: "\(vm.forensicCount(for: .possibleDecryptableDBs))") {
                             applyDashboardFilter(.possibleDecryptableDBs, label: "Possible Decryptable DBs")
                         }
-                        SummaryCard(title: "Nested Archives", value: "\(f.nestedArchives)") {
+                        SummaryCard(title: "Nested Archives", value: "\(vm.forensicCount(for: .nestedArchives))") {
                             applyDashboardFilter(.nestedArchives, label: "Nested Archives")
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     HStack {
-                        SummaryCard(title: "Decryptable Signals", value: "\(metrics["decryptable"] ?? 0)") {
+                        SummaryCard(title: "Decryptable Signals", value: "\(vm.forensicCount(for: .decryptableSignals))") {
                             applyDashboardFilter(.decryptableSignals, label: "Decryptable Signals")
                         }
-                        SummaryCard(title: "Thumbnails", value: "\(metrics["thumbnails"] ?? 0)") {
+                        SummaryCard(title: "Thumbnails", value: "\(vm.forensicCount(for: .thumbnails))") {
                             applyDashboardFilter(.thumbnails, label: "Thumbnails")
                         }
-                        SummaryCard(title: "Message Signals", value: "\(metrics["messages"] ?? 0)") {
+                        SummaryCard(title: "Message Signals", value: "\(vm.forensicCount(for: .messageSignals))") {
                             applyDashboardFilter(.messageSignals, label: "Message Signals")
                         }
-                        SummaryCard(title: "Keys", value: "\(max(metrics["keys"] ?? 0, f.keyFiles.count))") {
+                        SummaryCard(title: "Keys", value: "\(vm.forensicCount(for: .keys))") {
                             applyDashboardFilter(.keys, label: "Keys")
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     HStack {
-                        SummaryCard(title: "Emails", value: "\(metrics["emails"] ?? 0)") {
+                        SummaryCard(title: "Emails", value: "\(vm.forensicCount(for: .emails))") {
                             applyDashboardFilter(.emails, label: "Emails")
                         }
-                        SummaryCard(title: "URLs", value: "\(metrics["urls"] ?? 0)") {
+                        SummaryCard(title: "URLs", value: "\(vm.forensicCount(for: .urls))") {
                             applyDashboardFilter(.urls, label: "URLs")
                         }
-                        SummaryCard(title: "Phone Numbers", value: "\(metrics["phones"] ?? 0)") {
+                        SummaryCard(title: "Phone Numbers", value: "\(vm.forensicCount(for: .phoneNumbers))") {
                             applyDashboardFilter(.phoneNumbers, label: "Phone Numbers")
                         }
-                        SummaryCard(title: "Language Text", value: "\(metrics["language_signals"] ?? 0)") {
+                        SummaryCard(title: "Language Text", value: "\(vm.forensicCount(for: .languageText))") {
                             applyDashboardFilter(.languageText, label: "Language Text")
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     HStack {
-                        SummaryCard(title: "Hash Candidates", value: "\(metrics["hash_candidates"] ?? 0)") {
+                        SummaryCard(title: "Hash Candidates", value: "\(vm.forensicCount(for: .hashCandidates))") {
                             applyDashboardFilter(.hashCandidates, label: "Hash Candidates")
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     HStack {
-                        SummaryCard(title: "AI Safe", value: "\(aiCount(.none, in: f.analyzerResults))") {
+                        SummaryCard(title: "AI Safe", value: "\(vm.forensicCount(for: .aiSafe))") {
                             applyDashboardFilter(.aiSafe, label: "AI Safe")
                         }
-                        SummaryCard(title: "AI Suggestive", value: "\(aiCount(.suggestive, in: f.analyzerResults))") {
+                        SummaryCard(title: "AI Suggestive", value: "\(vm.forensicCount(for: .aiSuggestive))") {
                             applyDashboardFilter(.aiSuggestive, label: "AI Suggestive")
                         }
-                        SummaryCard(title: "AI Explicit", value: "\(aiCount(.explicit, in: f.analyzerResults))") {
+                        SummaryCard(title: "AI Explicit", value: "\(vm.forensicCount(for: .aiExplicit))") {
                             applyDashboardFilter(.aiExplicit, label: "AI Explicit")
                         }
-                        SummaryCard(title: "AI Unknown", value: "\(aiCount(.unknown, in: f.analyzerResults))") {
+                        SummaryCard(title: "AI Unknown", value: "\(vm.forensicCount(for: .aiUnknown))") {
                             applyDashboardFilter(.aiUnknown, label: "AI Unknown")
                         }
                     }
@@ -1852,7 +1866,7 @@ private struct ForensicDashboardView: View {
                     }
 
                     GroupBox("AI Reason Tags") {
-                        let tags = topReasonTags(in: f.analyzerResults)
+                        let tags = vm.reasonTags()
                         if tags.isEmpty {
                             Text("No reason tags yet.").foregroundStyle(.secondary)
                         } else {
@@ -1916,10 +1930,6 @@ private struct ForensicDashboardView: View {
         .cardSurface()
     }
 
-    private func aiCount(_ severity: NSFWSeverity, in results: [AnalyzerResult]) -> Int {
-        results.filter { $0.nsfwSeverity == severity }.count
-    }
-
     private func pathInRun(_ runRoot: String, _ relative: String) -> String {
         URL(fileURLWithPath: runRoot, isDirectory: true)
             .appendingPathComponent(relative).path
@@ -1932,23 +1942,6 @@ private struct ForensicDashboardView: View {
     private func openIfExists(path: String) {
         guard fileExists(path) else { return }
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
-    }
-
-    private func topReasonTags(in results: [AnalyzerResult]) -> [(String, Int)] {
-        var counts: [String: Int] = [:]
-        for result in results {
-            for det in result.reasonDetections ?? [] {
-                let key = det.reason.rawValue
-                counts[key, default: 0] += 1
-            }
-        }
-        return counts
-            .sorted { lhs, rhs in
-                if lhs.value == rhs.value { return lhs.key < rhs.key }
-                return lhs.value > rhs.value
-            }
-            .prefix(18)
-            .map { ($0.key, $0.value) }
     }
 
     private func flagReasonSummary(for result: AnalyzerResult) -> String? {
@@ -2005,14 +1998,15 @@ private struct ForensicDashboardView: View {
         vm.statusMessage = "Filtering results by AI reason: \(normalized)"
     }
 
-    private func applyDashboardFilter(_ facet: AppViewModel.ForensicFacet, label: String) {
+    private func applyDashboardFilter(_ facet: ForensicFacet, label: String) {
         if vm.activeForensicFacet == facet {
             vm.activeForensicFacet = nil
             vm.statusMessage = "Cleared forensic filter."
             return
         }
         vm.activeForensicFacet = facet
-        vm.query = ""
+        vm.clearSearch()
+        vm.clearGraphPivot()
         vm.route = .results
         vm.statusMessage = "Filtering results by \(label) facet."
     }
@@ -2269,39 +2263,25 @@ private struct TimelineView: View {
     @EnvironmentObject private var vm: AppViewModel
 
     private struct TimelineEvent: Identifiable {
-        let id = UUID()
+        let id: UUID
         let date: Date
         let title: String
         let subtitle: String
         let category: FileCategory
+        let item: FoundItem
     }
 
     private var events: [TimelineEvent] {
-        guard let run = vm.activeRun else { return [] }
-        let fm = FileManager.default
-        let calendar = Calendar.current
-        var built: [TimelineEvent] = []
-        built.reserveCapacity(min(run.items.count, 1600))
-
-        for item in run.items.prefix(1600) {
-            let path = item.outputPath ?? item.sourcePath
-            let url = URL(fileURLWithPath: path)
-            let attrs = try? fm.attributesOfItem(atPath: path)
-            let date = (attrs?[.creationDate] as? Date)
-                ?? (attrs?[.modificationDate] as? Date)
-                ?? run.startedAt
-            let day = calendar.startOfDay(for: date)
-            built.append(
-                TimelineEvent(
-                    date: day,
-                    title: url.lastPathComponent,
-                    subtitle: item.detectedType.uppercased(),
-                    category: item.category
-                )
+        vm.timelineItems().map { row in
+            TimelineEvent(
+                id: row.item.id,
+                date: row.date,
+                title: URL(fileURLWithPath: row.item.sourcePath).lastPathComponent,
+                subtitle: row.item.detectedType.uppercased(),
+                category: row.item.category,
+                item: row.item
             )
         }
-
-        return built.sorted { $0.date > $1.date }
     }
 
     var body: some View {
@@ -2326,6 +2306,11 @@ private struct TimelineView: View {
                         Text(event.date, style: .date)
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        vm.selectedItem = event.item
+                        vm.route = .results
                     }
                 }
                 .scrollContentBackground(.hidden)
@@ -2355,63 +2340,11 @@ private struct TimelineView: View {
     }
 }
 
-private struct EvidenceGraphNode: Identifiable, Hashable {
-    let id: String
-    let title: String
-    let kind: String
-    let count: Int
-}
-
-private struct EvidenceGraphEdge: Identifiable {
-    let id = UUID()
-    let from: String
-    let to: String
-    let weight: Int
-}
-
 private struct EvidenceGraphView: View {
     @EnvironmentObject private var vm: AppViewModel
 
-    private var graphData: ([EvidenceGraphNode], [EvidenceGraphEdge]) {
-        guard let run = vm.activeRun else { return ([], []) }
-        var sourceCounts: [String: Int] = [:]
-        var typeCounts: [String: Int] = [:]
-        var pairCounts: [String: Int] = [:]
-
-        for item in run.items.prefix(3000) {
-            let sourceFolder = URL(fileURLWithPath: item.sourcePath).deletingLastPathComponent().lastPathComponent
-            let type = item.detectedType.uppercased()
-            sourceCounts[sourceFolder, default: 0] += 1
-            typeCounts[type, default: 0] += 1
-            pairCounts["\(sourceFolder)|\(type)", default: 0] += 1
-        }
-
-        let topSources = sourceCounts.sorted { $0.value > $1.value }.prefix(12)
-        let topTypes = typeCounts.sorted { $0.value > $1.value }.prefix(10)
-
-        let sourceSet = Set(topSources.map(\.key))
-        let typeSet = Set(topTypes.map(\.key))
-
-        let sourceNodes = topSources.map { EvidenceGraphNode(id: "src:\($0.key)", title: $0.key, kind: "source", count: $0.value) }
-        let typeNodes = topTypes.map { EvidenceGraphNode(id: "type:\($0.key)", title: $0.key, kind: "type", count: $0.value) }
-        let nodes = sourceNodes + typeNodes
-
-        let edges = pairCounts.compactMap { key, value -> EvidenceGraphEdge? in
-            let parts = key.split(separator: "|", maxSplits: 1).map(String.init)
-            guard parts.count == 2 else { return nil }
-            let src = parts[0]
-            let type = parts[1]
-            guard sourceSet.contains(src), typeSet.contains(type) else { return nil }
-            return EvidenceGraphEdge(from: "src:\(src)", to: "type:\(type)", weight: value)
-        }
-        .sorted { $0.weight > $1.weight }
-        .prefix(40)
-
-        return (nodes, Array(edges))
-    }
-
     var body: some View {
-        let (nodes, edges) = graphData
+        let (nodes, edges) = vm.evidenceGraphData()
         VStack(alignment: .leading, spacing: 12) {
             Text("Evidence Graph")
                 .font(.title2.bold())
@@ -2436,6 +2369,10 @@ private struct EvidenceGraphView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            vm.applyGraphPivot(sourceFolder: src, detectedType: dst)
+                        }
                     }
                     .frame(width: 280)
                     .cardSurface()
@@ -2448,8 +2385,8 @@ private struct EvidenceGraphView: View {
 }
 
 private struct GraphCanvasView: View {
-    let nodes: [EvidenceGraphNode]
-    let edges: [EvidenceGraphEdge]
+    let nodes: [EvidenceGraphNodeModel]
+    let edges: [EvidenceGraphEdgeModel]
 
     var body: some View {
         GeometryReader { geo in
@@ -2521,7 +2458,7 @@ private struct CaseBuilderView: View {
     @State private var filter = ""
 
     private var runItems: [FoundItem] {
-        vm.activeRun?.items ?? []
+        vm.filteredItems
     }
 
     private var candidateItems: [FoundItem] {
@@ -2547,6 +2484,10 @@ private struct CaseBuilderView: View {
             HStack(spacing: 10) {
                 TextField("Case Name", text: $caseName)
                     .textFieldStyle(.roundedBorder)
+                Button("Save Case") {
+                    vm.saveInvestigationCase(name: caseName, notes: notes, artifactIDs: selectedIDs)
+                    vm.statusMessage = "Saved case \"\(caseName)\" with \(selectedIDs.count) artifacts."
+                }
                 Button("Clear Selection") {
                     selectedIDs.removeAll()
                 }
