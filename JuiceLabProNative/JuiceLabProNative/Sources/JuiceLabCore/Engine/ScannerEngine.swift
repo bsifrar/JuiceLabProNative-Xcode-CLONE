@@ -147,6 +147,24 @@ public actor ScannerEngine {
         let context = ScanContext(settings: settings, runName: runName, runID: run.id)
         run.settingsFingerprint = context.settingsFingerprint
 
+        if settings.enableAI {
+            let modelHash = AIEngine.shared.detectorModelHash(
+                modelName: settings.aiModelName,
+                compute: settings.aiComputePreference
+            )
+            if modelHash == nil {
+                if AIEngine.shared.scaAvailable {
+                    run.warnings.append(
+                        "NSFW reason model '\(settings.aiModelName)' was not found in the app bundle. Falling back to SCA-only sensitivity checks."
+                    )
+                } else {
+                    run.warnings.append(
+                        "NSFW detection is unavailable: model '\(settings.aiModelName)' is missing and SensitiveContentAnalysis is unavailable."
+                    )
+                }
+            }
+        }
+
         let allFiles = collectFiles(from: paths, enabledTypes: settings.enabledTypes)
         if allFiles.isEmpty {
             run.warnings.append(
@@ -155,7 +173,9 @@ public actor ScannerEngine {
             run.completedAt = Date()
             return run
         }
-        let singleFileProgressMode = allFiles.count == 1
+        // Synthetic per-stage progress is only safe when the scan plan is static.
+        // Archive extraction can enqueue additional files and make single-file estimates jump.
+        let singleFileProgressMode = allFiles.count == 1 && !context.enableArchiveExtraction
 
         let tempRoot = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent(runName, isDirectory: true)
@@ -197,11 +217,11 @@ public actor ScannerEngine {
                 for file in batch {
                     group.addTask { [stages] in
                         let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
-                        let totalForUI = max(initialTotalBytes, 1)
+                        let totalForUI = max(initialTotalBytes, size, 1)
 
                         if singleFileProgressMode {
                             var startProgress = ScanProgress(
-                                bytesScanned: min(max(size / 25, 1_024), size),
+                                bytesScanned: min(max(size / 25, 1_024), totalForUI),
                                 totalBytes: totalForUI,
                                 currentFile: file.lastPathComponent
                             )
@@ -246,7 +266,7 @@ public actor ScannerEngine {
                                 let fraction = Double(index + 1) / Double(max(stages.count, 1))
                                 let estimatedBytes = Int64(Double(size) * fraction)
                                 var stageProgress = ScanProgress(
-                                    bytesScanned: estimatedBytes,
+                                    bytesScanned: min(max(estimatedBytes, 0), totalForUI),
                                     totalBytes: totalForUI,
                                     currentFile: file.lastPathComponent
                                 )
@@ -271,6 +291,23 @@ public actor ScannerEngine {
 
                     progress.bytesScanned += bytes
                     progress.currentFile = current
+
+                    if context.enableArchiveExtraction, !out.extraFilesToScan.isEmpty, extractBudget > 0 {
+                        for f in out.extraFilesToScan {
+                            let id = f.path
+                            if seenPaths.contains(id) { continue }
+                            seenPaths.insert(id)
+
+                            let s = (try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+                            if s > 0, extractBudget - s >= 0 {
+                                extractBudget -= s
+                                filesToScan.append(f)
+                                progress.totalBytes += s
+                            }
+                            if extractBudget <= 0 { break }
+                        }
+                    }
+
                     updateRates(&progress, started: started)
                     onProgress?(progress)
 
@@ -304,21 +341,6 @@ public actor ScannerEngine {
                         stageFiles[k, default: 0] += 1
                     }
 
-                    if context.enableArchiveExtraction, !out.extraFilesToScan.isEmpty, extractBudget > 0 {
-                        for f in out.extraFilesToScan {
-                            let id = f.path
-                            if seenPaths.contains(id) { continue }
-                            seenPaths.insert(id)
-
-                            let s = (try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
-                            if s > 0, extractBudget - s >= 0 {
-                                extractBudget -= s
-                                filesToScan.append(f)
-                                progress.totalBytes += s
-                            }
-                            if extractBudget <= 0 { break }
-                        }
-                    }
                 }
             }
         }
@@ -853,11 +875,13 @@ public actor ScannerEngine {
             let ext = file.pathExtension.lowercased()
             let imageExts: Set<String> = ["jpg","jpeg","png","gif","webp","tif","tiff","bmp","heic","heif","ico"]
             let videoExts: Set<String> = ["mp4","mov","mkv","avi","mpeg","m2ts","webm"]
+            let looksLikeImage = Self.looksLikeImageData(data)
+            let looksLikeVideo = Self.looksLikeVideoData(data)
 
-            if imageExts.contains(ext) {
+            if imageExts.contains(ext) || looksLikeImage {
                 return await analyzeImage(file: file, context: context)
             }
-            if videoExts.contains(ext) {
+            if videoExts.contains(ext) || looksLikeVideo {
                 return await analyzeVideo(file: file, context: context)
             }
             return StageOutput()
@@ -877,7 +901,13 @@ public actor ScannerEngine {
                 modelName: context.settings.aiModelName,
                 compute: context.settings.aiComputePreference
             )
-            ar.reasonDetections = reasons
+            var combinedDetections = reasons ?? []
+
+            let semantic = await AIEngine.shared.detectSemanticDetections(cgImage: cg)
+            if !semantic.isEmpty {
+                combinedDetections.append(contentsOf: semantic)
+            }
+            ar.reasonDetections = combinedDetections.isEmpty ? nil : combinedDetections
 
             // Deterministic scoring
             let (score, severity) = Self.scoreDetections(
@@ -911,6 +941,7 @@ public actor ScannerEngine {
             var bestScore = 0.0
             var bestSeverity: NSFWSeverity = .unknown
             var allDetections: [ReasonDetection] = []
+            var semanticDetections: [ReasonDetection] = []
 
             for i in 0..<frameCount {
                 let t = CMTime(seconds: Double(i), preferredTimescale: 600)
@@ -948,6 +979,23 @@ public actor ScannerEngine {
                         )
                     })
                 }
+
+                // Keep generic semantic tags lightweight: sample only early frames.
+                if i < 5 {
+                    let semantic = await AIEngine.shared.detectSemanticDetections(cgImage: cg, maxObjectLabels: 6, maxTextTokens: 6)
+                    if !semantic.isEmpty {
+                        let ts = String(format: "%.2fs", CMTimeGetSeconds(actual))
+                        semanticDetections.append(contentsOf: semantic.map {
+                            ReasonDetection(
+                                reason: $0.reason,
+                                confidence: $0.confidence,
+                                bbox: $0.bbox,
+                                modelLabel: $0.modelLabel,
+                                notes: "\($0.notes ?? "semantic");frame=\(ts)"
+                            )
+                        })
+                    }
+                }
             }
 
             guard sampledFrames > 0 else { return StageOutput() }
@@ -955,7 +1003,8 @@ public actor ScannerEngine {
             var out = StageOutput()
             var ar = AnalyzerResult(sourcePath: file.path)
             ar.scaIsSensitive = sensitiveFrames > 0 ? true : nil
-            ar.reasonDetections = allDetections.isEmpty ? nil : Array(allDetections.prefix(200))
+            let mergedDetections = allDetections + semanticDetections
+            ar.reasonDetections = mergedDetections.isEmpty ? nil : Array(mergedDetections.prefix(250))
 
             if explicitFrames >= 2 {
                 ar.nsfwSeverity = .explicit
@@ -987,6 +1036,62 @@ public actor ScannerEngine {
             ar.scoringVersion = 1
         }
 
+        private static func looksLikeImageData(_ data: Data) -> Bool {
+            guard data.count >= 12 else { return false }
+
+            // JPEG
+            if data[0] == 0xFF, data[1] == 0xD8 { return true }
+            // PNG
+            if data[0] == 0x89, data[1] == 0x50, data[2] == 0x4E, data[3] == 0x47 { return true }
+            // GIF
+            if data[0] == 0x47, data[1] == 0x49, data[2] == 0x46 { return true }
+            // BMP
+            if data[0] == 0x42, data[1] == 0x4D { return true }
+            // WEBP: RIFF....WEBP
+            if data.count >= 12,
+               data[0] == 0x52, data[1] == 0x49, data[2] == 0x46, data[3] == 0x46,
+               data[8] == 0x57, data[9] == 0x45, data[10] == 0x42, data[11] == 0x50 {
+                return true
+            }
+            // TIFF (II*\0 or MM\0*)
+            if (data[0] == 0x49 && data[1] == 0x49 && data[2] == 0x2A && data[3] == 0x00) ||
+                (data[0] == 0x4D && data[1] == 0x4D && data[2] == 0x00 && data[3] == 0x2A) {
+                return true
+            }
+            // HEIF/HEIC family via ISO BMFF brand
+            if data[4] == 0x66, data[5] == 0x74, data[6] == 0x79, data[7] == 0x70 {
+                let brand = String(bytes: data[8..<12], encoding: .ascii)?.lowercased() ?? ""
+                let imageBrands: Set<String> = ["heic", "heix", "heif", "hevc", "mif1", "msf1", "avif"]
+                if imageBrands.contains(brand) { return true }
+            }
+
+            return false
+        }
+
+        private static func looksLikeVideoData(_ data: Data) -> Bool {
+            guard data.count >= 12 else { return false }
+
+            // MP4/MOV/ISO BMFF variants via ftyp box.
+            if data[4] == 0x66, data[5] == 0x74, data[6] == 0x79, data[7] == 0x70 {
+                let brand = String(bytes: data[8..<12], encoding: .ascii)?.lowercased() ?? ""
+                let videoBrands: Set<String> = [
+                    "isom", "iso2", "mp41", "mp42", "avc1", "m4v ", "qt  ", "3gp4", "3g2a"
+                ]
+                return videoBrands.contains(brand)
+            }
+            // Matroska/WebM (EBML)
+            if data[0] == 0x1A, data[1] == 0x45, data[2] == 0xDF, data[3] == 0xA3 {
+                return true
+            }
+            // AVI: RIFF....AVI 
+            if data[0] == 0x52, data[1] == 0x49, data[2] == 0x46, data[3] == 0x46,
+               data[8] == 0x41, data[9] == 0x56, data[10] == 0x49 {
+                return true
+            }
+
+            return false
+        }
+
         private static func scoreDetections(
             detections: [ReasonDetection],
             scaSensitive: Bool?,
@@ -1010,7 +1115,20 @@ public actor ScannerEngine {
                 score += weight(d.reason) * min(max(d.confidence, 0), 1)
             }
 
-            // small deterministic bump if SCA says sensitive
+            // If we only have SCA and it says sensitive, do not drop to "none":
+            // classify as at least suggestive so NSFW media is surfaced.
+            if detections.isEmpty {
+                if scaSensitive == true {
+                    let floor = max(preset.suggestiveThreshold, 0.45)
+                    return (floor, .suggestive)
+                }
+                if scaSensitive == false {
+                    return (0, .none)
+                }
+                return (0, .unknown)
+            }
+
+            // small deterministic bump if SCA says sensitive in addition to detector reasons
             if scaSensitive == true { score += 0.20 }
 
             // clamp
@@ -1021,10 +1139,6 @@ public actor ScannerEngine {
             else if score >= preset.suggestiveThreshold { severity = .suggestive }
             else { severity = .none }
 
-            // If neither model nor SCA could run, keep unknown
-            if detections.isEmpty, scaSensitive == nil {
-                return (0, .unknown)
-            }
             return (score, severity)
         }
 

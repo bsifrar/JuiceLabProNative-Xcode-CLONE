@@ -142,44 +142,97 @@ struct MainSplitView: View {
 
 private struct SidebarView: View {
     @EnvironmentObject private var vm: AppViewModel
+    @State private var lastScrolledRunKey: String?
 
     var body: some View {
         VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFit()
-                    .frame(width: 28, height: 28)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(AppTheme.primary.opacity(0.45), lineWidth: 1)
-                    )
-                Text("JuiceLabPro")
-                    .font(.headline.weight(.semibold))
-                Spacer()
-            }
-            .padding(.horizontal, 8)
-            .padding(.top, 4)
+            headerView
 
-            List(selection: $vm.route) {
-                Section("Navigate") {
-                    ForEach(AppViewModel.Route.allCases, id: \.self) { route in
-                        Label(route.rawValue, systemImage: icon(for: route)).tag(route)
-                    }
+            ScrollViewReader { proxy in
+                List(selection: $vm.route) {
+                    navigationSection
+                    runHistorySection
                 }
-                Section("Run History") {
-                    ForEach(vm.runs) { run in
-                        VStack(alignment: .leading) {
-                            Text(run.name).bold().lineLimit(1)
-                            Text("\(run.items.count) items").font(.caption).foregroundStyle(.secondary)
-                        }
-                        .tag(run.id)
-                        .onTapGesture { vm.selectedRunID = run.id }
-                    }
+                .onChange(of: vm.selectedRunKey) { _, newKey in
+                    guard let newKey else { return }
+                    scrollToRun(newKey, using: proxy)
+                }
+                .onAppear {
+                    guard let selected = vm.selectedRunKey ?? vm.runs.first.map(vm.runKey) else { return }
+                    scrollToRun(selected, using: proxy)
                 }
             }
+        }
+    }
+
+    private var headerView: some View {
+        HStack(spacing: 10) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 28, height: 28)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(AppTheme.primary.opacity(0.45), lineWidth: 1)
+                )
+            Text("JuiceLabPro")
+                .font(.headline.weight(.semibold))
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+    }
+
+    private var navigationSection: some View {
+        Section("Navigate") {
+            ForEach(AppViewModel.Route.allCases, id: \.self) { route in
+                Label(route.rawValue, systemImage: icon(for: route)).tag(route)
+            }
+        }
+    }
+
+    private var runHistorySection: some View {
+        Section("Run History") {
+            ForEach(vm.runs.indices, id: \.self) { idx in
+                let run = vm.runs[idx]
+                let runKey = vm.runKey(run)
+                let isSelected = isRunSelected(run)
+                SidebarRunRow(
+                    run: run,
+                    isSelected: isSelected,
+                    onTap: {
+                        vm.selectedRunID = run.id
+                        vm.selectedRunKey = runKey
+                        vm.clearForensicFacet()
+                        vm.query = ""
+                        vm.route = .results
+                    }
+                )
+                .id(runKey)
+                .listRowInsets(EdgeInsets(top: 3, leading: 6, bottom: 3, trailing: 6))
+                .listRowBackground(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(isSelected ? AppTheme.primary.opacity(0.22) : Color.clear)
+                )
+            }
+        }
+    }
+
+    private func isRunSelected(_ run: ScanRun) -> Bool {
+        if let selectedRunKey = vm.selectedRunKey {
+            return vm.runKey(run) == selectedRunKey
+        }
+        guard let first = vm.runs.first else { return false }
+        return vm.runKey(run) == vm.runKey(first)
+    }
+
+    private func scrollToRun(_ runKey: String, using proxy: ScrollViewProxy) {
+        guard lastScrolledRunKey != runKey else { return }
+        lastScrolledRunKey = runKey
+        DispatchQueue.main.async {
+            proxy.scrollTo(runKey, anchor: .center)
         }
     }
 
@@ -196,6 +249,36 @@ private struct SidebarView: View {
     }
 }
 
+private struct SidebarRunRow: View {
+    let run: ScanRun
+    let isSelected: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(alignment: .leading) {
+                Text(run.name).bold().lineLimit(1)
+                Text("\(run.items.count) items")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isSelected ? AppTheme.primary.opacity(0.30) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? AppTheme.primary.opacity(0.80) : Color.clear, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct ToolbarView: View {
     @EnvironmentObject private var vm: AppViewModel
     @State private var showClearResultsDialog = false
@@ -203,13 +286,21 @@ private struct ToolbarView: View {
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                Picker("Mode", selection: $vm.settings.performanceMode) {
-                    Text("Fast").tag(PerformanceMode.fast)
-                    Text("Balanced").tag(PerformanceMode.balanced)
-                    Text("Thorough").tag(PerformanceMode.thorough)
+                HStack(spacing: 6) {
+                    modeButton("Fast", .fast)
+                    modeButton("Balanced", .balanced)
+                    modeButton("Thorough", .thorough)
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 260)
+                .padding(4)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(AppTheme.input.opacity(0.85))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(AppTheme.primary.opacity(0.32), lineWidth: 1)
+                        )
+                )
+                .frame(width: 286)
 
                 Toggle("AI", isOn: $vm.settings.enableAI)
                     .toggleStyle(.switch)
@@ -312,6 +403,28 @@ private struct ToolbarView: View {
             vm.addSources(panel.urls)
         }
     }
+
+    @ViewBuilder
+    private func modeButton(_ title: String, _ mode: PerformanceMode) -> some View {
+        let selected = vm.settings.performanceMode == mode
+        Button(title) {
+            vm.settings.performanceMode = mode
+        }
+        .buttonStyle(.plain)
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(selected ? AppTheme.text : AppTheme.mutedText)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 9)
+                .fill(selected ? AppTheme.primary.opacity(0.32) : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(selected ? AppTheme.primary.opacity(0.68) : Color.clear, lineWidth: 1)
+        )
+    }
 }
 
 private struct DropAndStatsView: View {
@@ -383,8 +496,10 @@ private struct DropAndStatsView: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                let normalizedProgress = vm.progress.totalBytes == 0 ? 0 : min(1, max(0, Double(vm.progress.bytesScanned) / Double(vm.progress.totalBytes)))
-                ScanRadarView(progress: normalizedProgress, isScanning: vm.isScanning)
+                let rawProgress = vm.progress.totalBytes == 0 ? 0 : (Double(vm.progress.bytesScanned) / Double(vm.progress.totalBytes))
+                let clampedProgress = min(1, max(0, rawProgress))
+                let displayProgress = vm.isScanning ? min(clampedProgress, 0.995) : clampedProgress
+                ScanRadarView(progress: displayProgress, isScanning: vm.isScanning)
                     .frame(maxWidth: .infinity, minHeight: 170, maxHeight: 170, alignment: .center)
                 Text("Scanned: \(ByteCountFormatter.string(fromByteCount: vm.progress.bytesScanned, countStyle: .file))")
                 Text(String(format: "%.1f MB/s", vm.progress.mbPerSecond))
@@ -395,16 +510,34 @@ private struct DropAndStatsView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
-                ProgressView(
-                    value: vm.progress.totalBytes == 0 ? 0 : Double(vm.progress.bytesScanned),
-                    total: Double(max(vm.progress.totalBytes, 1))
-                )
+                ProgressView(value: displayProgress, total: 1.0)
                 if !vm.statusMessage.isEmpty {
                     Text(vm.statusMessage)
                         .font(.caption)
                         .foregroundStyle(vm.statusMessage.localizedCaseInsensitiveContains("warning") ||
                                          vm.statusMessage.localizedCaseInsensitiveContains("unreadable") ? .orange : .secondary)
                         .lineLimit(3)
+                }
+                if let run = vm.activeRun, !run.warnings.isEmpty {
+                    DisclosureGroup("Warnings (\(run.warnings.count))") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(run.warnings.prefix(10).enumerated()), id: \.offset) { _, warning in
+                                Text("• \(warning)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            if run.warnings.count > 10 {
+                                Text("…and \(run.warnings.count - 10) more")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(.top, 2)
+                    }
+                    .font(.caption)
+                    .tint(.orange)
                 }
             }
             .frame(width: 260)
@@ -430,6 +563,8 @@ private struct ResultsTableView: View {
     @EnvironmentObject private var vm: AppViewModel
     let items: [FoundItem]
     @State private var sortedItems: [FoundItem] = []
+    @State private var selectedItemID: UUID?
+    @State private var selectionCommitTask: Task<Void, Never>?
     @State private var sortOrder: [KeyPathComparator<FoundItem>] = [
         .init(\.detectedType, order: .forward)
     ]
@@ -440,6 +575,43 @@ private struct ResultsTableView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if hasActiveSearchFilters {
+                HStack(spacing: 8) {
+                    if let facetLabel = vm.activeForensicFacetLabel {
+                        Label("Forensic: \(facetLabel)", systemImage: "line.3.horizontal.decrease.circle")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Capsule().fill(AppTheme.primary.opacity(0.24)))
+                    }
+                    if !vm.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Label("Search: \"\(vm.query)\"", systemImage: "magnifyingglass")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Capsule().fill(Color.gray.opacity(0.20)))
+                    }
+                    Button("Clear Forensic Filter") {
+                        vm.clearForensicFacet()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(vm.activeForensicFacet == nil)
+
+                    Button("Clear Search") {
+                        vm.query = ""
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(vm.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    Button("Clear All") {
+                        vm.clearForensicFacet()
+                        vm.query = ""
+                        vm.statusMessage = "Cleared active filters."
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Spacer(minLength: 0)
+                }
+            }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack {
                     ForEach(FileCategory.allCases, id: \.self) { category in
@@ -503,14 +675,12 @@ private struct ResultsTableView: View {
         .cardSurface()
     }
 
+    private var hasActiveSearchFilters: Bool {
+        vm.activeForensicFacet != nil || !vm.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var resultsTable: some View {
-        Table(filteredSortedItems, selection: Binding(
-            get: { vm.selectedItem?.id },
-            set: { selectedID in
-                vm.selectedItem = filteredSortedItems.first(where: { $0.id == selectedID })
-            })
-        , sortOrder: $sortOrder
-        ) {
+        Table(filteredSortedItems, selection: $selectedItemID, sortOrder: $sortOrder) {
             TableColumn("Type", value: \.detectedType) { item in
                 Text(item.detectedType.uppercased())
             }
@@ -532,9 +702,22 @@ private struct ResultsTableView: View {
                 Text(ByteCountFormatter.string(fromByteCount: Int64(item.length), countStyle: .file))
             }
         }
-        .onAppear { applySort() }
-        .onChange(of: items) { _, _ in applySort() }
-        .onChange(of: sortOrder) { _, _ in applySort() }
+        .onAppear {
+            applySort()
+            selectedItemID = vm.selectedItem?.id
+            scheduleSelectionCommit(immediate: true)
+        }
+        .onChange(of: items) { _, _ in
+            applySort()
+            validateSelection()
+        }
+        .onChange(of: sortOrder) { _, _ in
+            applySort()
+            validateSelection()
+        }
+        .onChange(of: selectedItemID) { _, _ in
+            scheduleSelectionCommit()
+        }
     }
 
     private var filteredSortedItems: [FoundItem] {
@@ -575,6 +758,41 @@ private struct ResultsTableView: View {
         copy.sort(using: sortOrder)
         sortedItems = copy
     }
+
+    private func validateSelection() {
+        guard let selectedItemID else {
+            scheduleSelectionCommit(immediate: true)
+            return
+        }
+        guard filteredSortedItems.contains(where: { $0.id == selectedItemID }) else {
+            self.selectedItemID = nil
+            scheduleSelectionCommit(immediate: true)
+            return
+        }
+        scheduleSelectionCommit()
+    }
+
+    private func scheduleSelectionCommit(immediate: Bool = false) {
+        selectionCommitTask?.cancel()
+        let selected = selectedItemID
+        selectionCommitTask = Task { @MainActor in
+            if !immediate {
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            guard let selected else {
+                if vm.selectedItem != nil { vm.selectedItem = nil }
+                return
+            }
+            if let current = filteredSortedItems.first(where: { $0.id == selected }) {
+                if vm.selectedItem?.id != current.id {
+                    vm.selectedItem = current
+                }
+            } else if vm.selectedItem != nil {
+                vm.selectedItem = nil
+            }
+        }
+    }
 }
 
 private enum MediaQuickFilter: String, CaseIterable {
@@ -602,6 +820,7 @@ private extension FoundItem {
 private struct InspectorView: View {
     @EnvironmentObject private var vm: AppViewModel
     let item: FoundItem?
+    @State private var showFullscreenPreview = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -622,11 +841,26 @@ private struct InspectorView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                             .truncationMode(.middle)
+                        if let ar = analyzerResult(for: item) {
+                            Divider().padding(.vertical, 2)
+                            Text("AI Severity: \(ar.nsfwSeverity.rawValue.capitalized)")
+                            Text(String(format: "AI Score: %.2f", ar.nsfwScore))
+                            if let reasonSummary = flagReasonSummary(for: ar) {
+                                Text("Flag reasons: \(reasonSummary)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 GroupBox("Preview") {
-                    PreviewView(item: item, runOutputRoot: vm.activeRun?.outputRoot)
+                    PreviewView(
+                        item: item,
+                        runOutputRoot: vm.activeRun?.outputRoot,
+                        showExpandedPreview: $showFullscreenPreview
+                    )
                         .frame(maxWidth: .infinity, minHeight: 180, maxHeight: 320)
                         .background(Color.gray.opacity(0.08))
                         .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -646,6 +880,9 @@ private struct InspectorView: View {
                                 NSWorkspace.shared.open(URL(fileURLWithPath: path))
                             }
                         }
+                        Button("Open Fullscreen Preview") {
+                            showFullscreenPreview = true
+                        }
                     }
                 }
             } else {
@@ -656,11 +893,31 @@ private struct InspectorView: View {
         }
         .cardSurface()
     }
+
+    private func analyzerResult(for item: FoundItem) -> AnalyzerResult? {
+        vm.activeRun?.forensic.analyzerResults.first(where: { $0.sourcePath == item.sourcePath })
+    }
+
+    private func flagReasonSummary(for result: AnalyzerResult) -> String? {
+        if let detections = result.reasonDetections, !detections.isEmpty {
+            let top = detections
+                .sorted { $0.confidence > $1.confidence }
+                .prefix(3)
+                .map { "\($0.modelLabel) (\(Int($0.confidence * 100))%)" }
+                .joined(separator: ", ")
+            return top.isEmpty ? nil : top
+        }
+        if result.scaIsSensitive == true {
+            return "SensitiveContentAnalysis marked this media as sensitive."
+        }
+        return nil
+    }
 }
 
 private struct PreviewView: View {
     let item: FoundItem
     let runOutputRoot: String?
+    @Binding var showExpandedPreview: Bool
 
     @State private var nsImage: NSImage?
     @State private var previewText: String = ""
@@ -669,9 +926,10 @@ private struct PreviewView: View {
     @State private var pdfDocument: PDFDocument?
     @State private var avPlayer: AVPlayer?
     @State private var htmlPreview: HTMLPreviewContent?
+    @State private var previewLoadID: UUID = UUID()
 
     var body: some View {
-        ZStack {
+        Group {
             if htmlPreview != nil {
                 VStack(spacing: 8) {
                     if !htmlRenderedText.isEmpty {
@@ -701,23 +959,108 @@ private struct PreviewView: View {
             } else if let player = avPlayer {
                 AVPlayerViewWrapper(player: player)
             } else if let img = nsImage {
-                GeometryReader { geo in
-                    Image(nsImage: img)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: geo.size.width, height: geo.size.height)
-                }
+                Image(nsImage: img)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if !previewText.isEmpty {
                 ScrollView { Text(previewText).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(6) }
             } else {
                 ProgressView().controlSize(.small)
             }
         }
-        .task(id: item.id) { await loadPreview() }
+        .contextMenu {
+            Button("Expand Preview") { showExpandedPreview = true }
+            Button("Reveal in Finder") {
+                let path = item.outputPath ?? item.sourcePath
+                revealInFinder(path: path)
+            }
+        }
+        .onTapGesture(count: 2) {
+            showExpandedPreview = true
+        }
+        .sheet(isPresented: $showExpandedPreview) {
+            VStack(spacing: 10) {
+                HStack {
+                    Text(URL(fileURLWithPath: item.sourcePath).lastPathComponent)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Reveal in Finder") {
+                        revealInFinder(path: item.outputPath ?? item.sourcePath)
+                    }
+                    Button("Close") { showExpandedPreview = false }
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+
+                previewPane
+                    .padding(8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.opacity(0.2))
+            }
+            .frame(minWidth: 980, minHeight: 680)
+        }
+        .task(id: item.id) {
+            let loadID = UUID()
+            await MainActor.run { previewLoadID = loadID }
+            // Debounce rapid keyboard selection changes to avoid preview churn/crashes.
+            try? await Task.sleep(nanoseconds: 140_000_000)
+            guard !Task.isCancelled else { return }
+            await loadPreview(loadID: loadID)
+        }
     }
 
-    private func loadPreview() async {
-        await MainActor.run {
+    @ViewBuilder
+    private var previewPane: some View {
+        if htmlPreview != nil {
+            VStack(spacing: 8) {
+                if !htmlRenderedText.isEmpty {
+                    ScrollView {
+                        Text(htmlRenderedText)
+                            .font(.system(size: 12))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6)
+                    }
+                    .frame(minHeight: 180, maxHeight: 260)
+                }
+                if !htmlRawText.isEmpty {
+                    Divider()
+                    ScrollView {
+                        Text(htmlRawText)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6)
+                    }
+                    .frame(minHeight: 110, maxHeight: 200)
+                }
+            }
+        } else if let doc = pdfDocument {
+            PDFKitView(document: doc)
+        } else if let player = avPlayer {
+            AVPlayerViewWrapper(player: player)
+        } else if let img = nsImage {
+            Image(nsImage: img)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if !previewText.isEmpty {
+            ScrollView {
+                Text(previewText)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(6)
+            }
+        } else {
+            ProgressView().controlSize(.small)
+        }
+    }
+
+    private func loadPreview(loadID: UUID) async {
+        guard !Task.isCancelled else { return }
+        await applyIfCurrent(loadID) {
             self.nsImage = nil
             self.previewText = ""
             self.htmlRawText = ""
@@ -732,6 +1075,7 @@ private struct PreviewView: View {
         var lastError: Error?
 
         for candidate in candidates {
+            if Task.isCancelled { return }
             let url = URL(fileURLWithPath: candidate)
             guard FileManager.default.fileExists(atPath: candidate) else { continue }
 
@@ -744,6 +1088,7 @@ private struct PreviewView: View {
                 #if canImport(AppKit)
                 if scoped { url.stopAccessingSecurityScopedResource() }
                 #endif
+                if Task.isCancelled { return }
                 loaded = (url, data)
                 break
             } catch {
@@ -757,9 +1102,9 @@ private struct PreviewView: View {
         guard let (url, data) = loaded else {
             if let lastError {
                 let message = "Preview failed: \(lastError.localizedDescription). Use Reveal in Finder to open exported artifacts."
-                await MainActor.run { self.previewText = message }
+                await applyIfCurrent(loadID) { self.previewText = message }
             } else {
-                await MainActor.run { self.previewText = "File not found in source or exported output." }
+                await applyIfCurrent(loadID) { self.previewText = "File not found in source or exported output." }
             }
             return
         }
@@ -767,7 +1112,7 @@ private struct PreviewView: View {
         // Priority: PDF, AV (video/audio), Image, Text, Hex
         let ext = url.pathExtension.lowercased()
         if ext == "pdf", let doc = PDFDocument(data: data) {
-            await MainActor.run { self.pdfDocument = doc }
+            await applyIfCurrent(loadID) { self.pdfDocument = doc }
             return
         }
 
@@ -777,8 +1122,8 @@ private struct PreviewView: View {
         let htmlCandidate = data.prefix(256_000)
         if (htmlExts.contains(ext) || htmlExts.contains(declaredExt) || declaredType == "html" || looksLikeHTML(data: htmlCandidate)),
            let decoded = decodeText(data: htmlCandidate) {
-            let rendered = wrapHTMLForPreview(decoded)
-            await MainActor.run {
+           let rendered = wrapHTMLForPreview(decoded)
+            await applyIfCurrent(loadID) {
                 self.htmlPreview = .inline(html: rendered, baseURL: url.deletingLastPathComponent())
                 self.htmlRawText = decoded
                 self.htmlRenderedText = extractReadableHTMLText(from: decoded) ?? ""
@@ -786,31 +1131,32 @@ private struct PreviewView: View {
             return
         }
 
-        let videoExts: Set<String> = ["mp4", "mov", "mkv", "avi", "webm", "mpeg", "m2ts"]
+        let videoExts: Set<String> = ["mp4", "mov", "mkv", "avi", "webm", "mpeg", "m2ts", "3gp", "3gpp", "gp"]
         let audioExts: Set<String> = ["mp3", "wav", "flac", "ogg", "m4a", "aac", "alac"]
-        if videoExts.contains(ext) || audioExts.contains(ext) {
+        if videoExts.contains(ext) || audioExts.contains(ext) || item.category == .video || item.category == .audio {
             let player = AVPlayer(url: url)
-            await MainActor.run { self.avPlayer = player }
+            await applyIfCurrent(loadID) { self.avPlayer = player }
             return
         }
 
-        if item.category == .images, let img = NSImage(data: data) {
-            let maxSide: CGFloat = 512
+        if item.category == .images || looksLikeImageData(data), let img = NSImage(data: data) {
             let size = img.size
-            let scale = min(maxSide / max(size.width, size.height), 1)
-            let target = NSSize(width: size.width * scale, height: size.height * scale)
-            let thumb = NSImage(size: target)
-            thumb.lockFocus()
-            img.draw(in: NSRect(origin: .zero, size: target), from: NSRect(origin: .zero, size: size), operation: .copy, fraction: 1.0)
-            thumb.unlockFocus()
-            await MainActor.run { self.nsImage = thumb }
+            let invalidSize = !size.width.isFinite || !size.height.isFinite || size.width <= 0 || size.height <= 0
+            let absurdSize = size.width > 20_000 || size.height > 20_000
+            if invalidSize || absurdSize {
+                await applyIfCurrent(loadID) {
+                    self.previewText = "Image decode returned invalid dimensions; preview skipped for safety."
+                }
+                return
+            }
+            await applyIfCurrent(loadID) { self.nsImage = img }
             return
         }
 
         let textExts: Set<String> = ["txt", "csv", "json", "xml", "md", "log", "vcf"]
         if textExts.contains(ext) {
             if let s = decodeText(data: data.prefix(64_000)) {
-                await MainActor.run { self.previewText = s }
+                await applyIfCurrent(loadID) { self.previewText = s }
                 return
             }
         }
@@ -819,14 +1165,14 @@ private struct PreviewView: View {
         if plistExts.contains(ext),
            let obj = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
            let pretty = prettyPrintPropertyList(obj) {
-            await MainActor.run { self.previewText = pretty }
+            await applyIfCurrent(loadID) { self.previewText = pretty }
             return
         }
 
         if let strings = extractPrintableStrings(from: data.prefix(64_000), minRunLength: 4),
            !strings.isEmpty {
             let header = "Extracted strings preview:\n\n"
-            await MainActor.run { self.previewText = header + strings }
+            await applyIfCurrent(loadID) { self.previewText = header + strings }
             return
         }
 
@@ -841,7 +1187,14 @@ private struct PreviewView: View {
             lines.append(String(format: "%08X  %@", offset, hex))
             offset += 16
         }
-        await MainActor.run { self.previewText = lines.joined(separator: "\n") }
+        await applyIfCurrent(loadID) { self.previewText = lines.joined(separator: "\n") }
+    }
+
+    private func applyIfCurrent(_ loadID: UUID, _ update: @escaping @MainActor () -> Void) async {
+        await MainActor.run {
+            guard self.previewLoadID == loadID else { return }
+            update()
+        }
     }
 
     private func extractPrintableStrings(from data: Data.SubSequence, minRunLength: Int) -> String? {
@@ -960,6 +1313,29 @@ private struct PreviewView: View {
             .replacingOccurrences(of: "\r\n", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? nil : cleaned
+    }
+
+    private func looksLikeImageData(_ data: Data) -> Bool {
+        guard data.count >= 12 else { return false }
+        if data[0] == 0x89, data[1] == 0x50, data[2] == 0x4E, data[3] == 0x47 { return true } // PNG
+        if data[0] == 0xFF, data[1] == 0xD8 { return true } // JPEG
+        if data[0] == 0x47, data[1] == 0x49, data[2] == 0x46 { return true } // GIF
+        if data[0] == 0x42, data[1] == 0x4D { return true } // BMP
+        if data[0] == 0x52, data[1] == 0x49, data[2] == 0x46, data[3] == 0x46,
+           data[8] == 0x57, data[9] == 0x45, data[10] == 0x42, data[11] == 0x50 { return true } // WEBP
+        return false
+    }
+
+    private func looksLikeVideoData(_ data: Data) -> Bool {
+        guard data.count >= 12 else { return false }
+        // MP4/MOV/3GP family via ftyp box
+        if data[4] == 0x66, data[5] == 0x74, data[6] == 0x79, data[7] == 0x70 { return true }
+        // Matroska/WebM
+        if data[0] == 0x1A, data[1] == 0x45, data[2] == 0xDF, data[3] == 0xA3 { return true }
+        // AVI (RIFF....AVI )
+        if data[0] == 0x52, data[1] == 0x49, data[2] == 0x46, data[3] == 0x46,
+           data[8] == 0x41, data[9] == 0x56, data[10] == 0x49 { return true }
+        return false
     }
 
     private func previewCandidatePaths() -> [String] {
@@ -1100,21 +1476,37 @@ private struct SettingsPanelView: View {
                 let archives = Set(SignatureRegistry.signatures.filter { $0.category == .archives }.map { $0.type })
 
                 HStack {
-                    Button("Images") { vm.settings.enabledTypes.formUnion(images) }
-                    Button("Audio") { vm.settings.enabledTypes.formUnion(audio) }
-                    Button("Video") { vm.settings.enabledTypes.formUnion(video) }
-                    Button("Archives") { vm.settings.enabledTypes.formUnion(archives) }
-                    Button("All") { vm.settings.enabledTypes = all }
+                    quickCategoryButton("Images", active: vm.settings.enabledTypes.isSuperset(of: images)) {
+                        vm.settings.enabledTypes.formUnion(images)
+                    }
+                    quickCategoryButton("Audio", active: vm.settings.enabledTypes.isSuperset(of: audio)) {
+                        vm.settings.enabledTypes.formUnion(audio)
+                    }
+                    quickCategoryButton("Video", active: vm.settings.enabledTypes.isSuperset(of: video)) {
+                        vm.settings.enabledTypes.formUnion(video)
+                    }
+                    quickCategoryButton("Archives", active: vm.settings.enabledTypes.isSuperset(of: archives)) {
+                        vm.settings.enabledTypes.formUnion(archives)
+                    }
+                    quickCategoryButton("All", active: vm.settings.enabledTypes == all) {
+                        vm.settings.enabledTypes = all
+                    }
                 }
-                .buttonStyle(.bordered)
 
                 HStack {
-                    Button("Only Images") { vm.settings.enabledTypes = images }
-                    Button("Only Audio") { vm.settings.enabledTypes = audio }
-                    Button("Only Video") { vm.settings.enabledTypes = video }
-                    Button("Only Archives") { vm.settings.enabledTypes = archives }
+                    quickCategoryButton("Only Images", active: vm.settings.enabledTypes == images) {
+                        vm.settings.enabledTypes = images
+                    }
+                    quickCategoryButton("Only Audio", active: vm.settings.enabledTypes == audio) {
+                        vm.settings.enabledTypes = audio
+                    }
+                    quickCategoryButton("Only Video", active: vm.settings.enabledTypes == video) {
+                        vm.settings.enabledTypes = video
+                    }
+                    quickCategoryButton("Only Archives", active: vm.settings.enabledTypes == archives) {
+                        vm.settings.enabledTypes = archives
+                    }
                 }
-                .buttonStyle(.bordered)
             }
             Picker("Organization", selection: $vm.settings.organizationScheme) {
                 Text("By source").tag(OrganizationScheme.bySource)
@@ -1150,7 +1542,28 @@ private struct SettingsPanelView: View {
             }
         }
         .formStyle(.grouped)
-        .cardSurface()
+        .scrollContentBackground(.hidden)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(AppTheme.card.opacity(0.94))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    AppTheme.primary.opacity(0.38),
+                                    Color.white.opacity(0.08)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                )
+        )
+        .shadow(color: AppTheme.primary.opacity(0.18), radius: 12, x: 0, y: 6)
+        .shadow(color: .black.opacity(0.42), radius: 18, x: 0, y: 12)
     }
 
     private func chooseOutputFolder() {
@@ -1163,6 +1576,17 @@ private struct SettingsPanelView: View {
 
         if panel.runModal() == .OK, let selectedURL = panel.url {
             vm.settings.outputFolder = selectedURL.path
+        }
+    }
+
+    @ViewBuilder
+    private func quickCategoryButton(_ title: String, active: Bool, action: @escaping () -> Void) -> some View {
+        if active {
+            Button(title, action: action)
+                .buttonStyle(.borderedProminent)
+        } else {
+            Button(title, action: action)
+                .buttonStyle(.bordered)
         }
     }
 
@@ -1200,39 +1624,73 @@ private struct ForensicDashboardView: View {
                     let f = run.forensic
                     let metrics = f.metrics ?? [:]
                     HStack {
-                        SummaryCard(title: ".REM Files", value: "\(f.remCount)")
-                        SummaryCard(title: "Media Recovered", value: "\(f.mediaCount)")
-                        SummaryCard(title: "Possible Decryptable DBs", value: "\(f.possibleDecryptableDBs)")
-                        SummaryCard(title: "Nested Archives", value: "\(f.nestedArchives)")
+                        SummaryCard(title: ".REM Files", value: "\(f.remCount)") {
+                            applyDashboardFilter(.remFiles, label: ".REM Files")
+                        }
+                        SummaryCard(title: "Media Recovered", value: "\(f.mediaCount)") {
+                            applyDashboardFilter(.mediaRecovered, label: "Media Recovered")
+                        }
+                        SummaryCard(title: "Possible Decryptable DBs", value: "\(f.possibleDecryptableDBs)") {
+                            applyDashboardFilter(.possibleDecryptableDBs, label: "Possible Decryptable DBs")
+                        }
+                        SummaryCard(title: "Nested Archives", value: "\(f.nestedArchives)") {
+                            applyDashboardFilter(.nestedArchives, label: "Nested Archives")
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     HStack {
-                        SummaryCard(title: "Decryptable Signals", value: "\(metrics["decryptable"] ?? 0)")
-                        SummaryCard(title: "Thumbnails", value: "\(metrics["thumbnails"] ?? 0)")
-                        SummaryCard(title: "Message Signals", value: "\(metrics["messages"] ?? 0)")
-                        SummaryCard(title: "Keys", value: "\(max(metrics["keys"] ?? 0, f.keyFiles.count))")
+                        SummaryCard(title: "Decryptable Signals", value: "\(metrics["decryptable"] ?? 0)") {
+                            applyDashboardFilter(.decryptableSignals, label: "Decryptable Signals")
+                        }
+                        SummaryCard(title: "Thumbnails", value: "\(metrics["thumbnails"] ?? 0)") {
+                            applyDashboardFilter(.thumbnails, label: "Thumbnails")
+                        }
+                        SummaryCard(title: "Message Signals", value: "\(metrics["messages"] ?? 0)") {
+                            applyDashboardFilter(.messageSignals, label: "Message Signals")
+                        }
+                        SummaryCard(title: "Keys", value: "\(max(metrics["keys"] ?? 0, f.keyFiles.count))") {
+                            applyDashboardFilter(.keys, label: "Keys")
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     HStack {
-                        SummaryCard(title: "Emails", value: "\(metrics["emails"] ?? 0)")
-                        SummaryCard(title: "URLs", value: "\(metrics["urls"] ?? 0)")
-                        SummaryCard(title: "Phones", value: "\(metrics["phones"] ?? 0)")
-                        SummaryCard(title: "Language Text", value: "\(metrics["language_signals"] ?? 0)")
+                        SummaryCard(title: "Emails", value: "\(metrics["emails"] ?? 0)") {
+                            applyDashboardFilter(.emails, label: "Emails")
+                        }
+                        SummaryCard(title: "URLs", value: "\(metrics["urls"] ?? 0)") {
+                            applyDashboardFilter(.urls, label: "URLs")
+                        }
+                        SummaryCard(title: "Phone Numbers", value: "\(metrics["phones"] ?? 0)") {
+                            applyDashboardFilter(.phoneNumbers, label: "Phone Numbers")
+                        }
+                        SummaryCard(title: "Language Text", value: "\(metrics["language_signals"] ?? 0)") {
+                            applyDashboardFilter(.languageText, label: "Language Text")
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     HStack {
-                        SummaryCard(title: "Hash Candidates", value: "\(metrics["hash_candidates"] ?? 0)")
+                        SummaryCard(title: "Hash Candidates", value: "\(metrics["hash_candidates"] ?? 0)") {
+                            applyDashboardFilter(.hashCandidates, label: "Hash Candidates")
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     HStack {
-                        SummaryCard(title: "AI Safe", value: "\(aiCount(.none, in: f.analyzerResults))")
-                        SummaryCard(title: "AI Suggestive", value: "\(aiCount(.suggestive, in: f.analyzerResults))")
-                        SummaryCard(title: "AI Explicit", value: "\(aiCount(.explicit, in: f.analyzerResults))")
-                        SummaryCard(title: "AI Unknown", value: "\(aiCount(.unknown, in: f.analyzerResults))")
+                        SummaryCard(title: "AI Safe", value: "\(aiCount(.none, in: f.analyzerResults))") {
+                            applyDashboardFilter(.aiSafe, label: "AI Safe")
+                        }
+                        SummaryCard(title: "AI Suggestive", value: "\(aiCount(.suggestive, in: f.analyzerResults))") {
+                            applyDashboardFilter(.aiSuggestive, label: "AI Suggestive")
+                        }
+                        SummaryCard(title: "AI Explicit", value: "\(aiCount(.explicit, in: f.analyzerResults))") {
+                            applyDashboardFilter(.aiExplicit, label: "AI Explicit")
+                        }
+                        SummaryCard(title: "AI Unknown", value: "\(aiCount(.unknown, in: f.analyzerResults))") {
+                            applyDashboardFilter(.aiUnknown, label: "AI Unknown")
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -1398,7 +1856,11 @@ private struct ForensicDashboardView: View {
                         if tags.isEmpty {
                             Text("No reason tags yet.").foregroundStyle(.secondary)
                         } else {
-                            FlowTagView(tags: tags)
+                            FlowTagView(
+                                tags: tags,
+                                selectedTag: selectedReasonTag(from: vm.query),
+                                onTagTap: applyReasonTagFilter
+                            )
                         }
                     }
 
@@ -1432,6 +1894,12 @@ private struct ForensicDashboardView: View {
                                         }
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
+                                        if let reasonSummary = flagReasonSummary(for: r) {
+                                            Text("Why flagged: \(reasonSummary)")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(3)
+                                        }
                                     }
                                     .padding(.vertical, 2)
                                 }
@@ -1483,6 +1951,21 @@ private struct ForensicDashboardView: View {
             .map { ($0.key, $0.value) }
     }
 
+    private func flagReasonSummary(for result: AnalyzerResult) -> String? {
+        if let detections = result.reasonDetections, !detections.isEmpty {
+            let top = detections
+                .sorted { $0.confidence > $1.confidence }
+                .prefix(3)
+                .map { "\($0.modelLabel) (\(Int($0.confidence * 100))%)" }
+                .joined(separator: ", ")
+            return top.isEmpty ? nil : top
+        }
+        if result.scaIsSensitive == true {
+            return "SensitiveContentAnalysis marked this media as sensitive."
+        }
+        return nil
+    }
+
     private func groupedDedupeRemovals(_ removed: [DedupeRemoval]) -> [DedupeGroup] {
         var grouped: [String: DedupeGroup] = [:]
         for row in removed {
@@ -1502,6 +1985,37 @@ private struct ForensicDashboardView: View {
             return lhs.removedPaths.count > rhs.removedPaths.count
         }
     }
+
+    private func selectedReasonTag(from query: String) -> String? {
+        let normalized = query
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "_")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private func applyReasonTagFilter(_ tag: String) {
+        let normalized = tag.lowercased().replacingOccurrences(of: "_", with: " ")
+        if vm.query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized {
+            vm.query = ""
+            return
+        }
+        vm.query = normalized
+        vm.route = .results
+        vm.statusMessage = "Filtering results by AI reason: \(normalized)"
+    }
+
+    private func applyDashboardFilter(_ facet: AppViewModel.ForensicFacet, label: String) {
+        if vm.activeForensicFacet == facet {
+            vm.activeForensicFacet = nil
+            vm.statusMessage = "Cleared forensic filter."
+            return
+        }
+        vm.activeForensicFacet = facet
+        vm.query = ""
+        vm.route = .results
+        vm.statusMessage = "Filtering results by \(label) facet."
+    }
 }
 
 private struct DedupeGroup {
@@ -1512,22 +2026,39 @@ private struct DedupeGroup {
 
 private struct FlowTagView: View {
     let tags: [(String, Int)]
+    var selectedTag: String? = nil
+    var onTagTap: ((String) -> Void)? = nil
 
     var body: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
             ForEach(tags, id: \.0) { tag, count in
-                HStack(spacing: 6) {
-                    Text(tag.replacingOccurrences(of: "_", with: " ").capitalized)
-                    Text("\(count)")
-                        .font(.caption2.bold())
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.gray.opacity(0.18)))
+                let isSelected = selectedTag == tag.lowercased()
+                Button {
+                    onTagTap?(tag)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(tag.replacingOccurrences(of: "_", with: " ").capitalized)
+                        Text("\(count)")
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.gray.opacity(isSelected ? 0.28 : 0.18)))
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(isSelected ? AppTheme.primary.opacity(0.24) : Color.gray.opacity(0.10))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(isSelected ? AppTheme.primary.opacity(0.58) : Color.clear, lineWidth: 1)
+                    )
                 }
-                .font(.caption)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.10)))
+                .buttonStyle(.plain)
+                .help("Filter results by this reason tag")
             }
         }
     }
@@ -1536,7 +2067,10 @@ private struct FlowTagView: View {
 private struct SummaryCard: View {
     let title: String
     let value: String
-    var body: some View {
+    var onTap: (() -> Void)? = nil
+
+    @ViewBuilder
+    private var content: some View {
         VStack {
             Text(title)
                 .font(.caption)
@@ -1544,6 +2078,21 @@ private struct SummaryCard: View {
             Text(value)
                 .font(.title2.bold())
                 .foregroundStyle(AppTheme.text)
+        }
+    }
+
+    var body: some View {
+        Group {
+            if let onTap {
+                Button(action: onTap) {
+                    content
+                }
+                .buttonStyle(.plain)
+                .contentShape(RoundedRectangle(cornerRadius: 12))
+                .help("Filter results by \(title)")
+            } else {
+                content
+            }
         }
             .frame(width: 180, height: 80)
             .forensicSummaryCardStyle()
@@ -1554,19 +2103,40 @@ private struct ScanRadarView: View {
     let progress: Double
     let isScanning: Bool
 
-    @State private var sweepDegrees: Double = 0
     @State private var glowOpacity: Double = 0.55
+    @State private var scanStart = Date()
 
     private var percentLabel: String {
-        "\(Int((progress * 100).rounded()))%"
+        if isScanning {
+            return "\(min(Int((progress * 100).rounded(.down)), 99))%"
+        }
+        return "\(Int((progress * 100).rounded()))%"
     }
 
     var body: some View {
+        Group {
+            if isScanning {
+                SwiftUI.TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { timeline in
+                    radarContent(at: timeline.date)
+                }
+            } else {
+                radarContent(at: Date())
+            }
+        }
+        .onAppear { updateAnimation() }
+        .onChange(of: isScanning) { _, _ in
+            updateAnimation()
+        }
+    }
+
+    @ViewBuilder
+    private func radarContent(at time: Date) -> some View {
         GeometryReader { geo in
             let size = min(geo.size.width, geo.size.height)
             let ringLine = max(3, size * 0.02)
             let innerSize = size * 0.50
-            let sweepRotation = sweepDegrees - 100
+            let elapsed = time.timeIntervalSince(scanStart)
+            let sweepRotation = isScanning ? ((elapsed / 1.6) * 360.0) - 100.0 : -100.0
 
             ZStack {
                 Circle()
@@ -1606,24 +2176,16 @@ private struct ScanRadarView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .shadow(color: AppTheme.primary.opacity(0.20), radius: 12, x: 0, y: 0)
         }
-        .onAppear { updateAnimation() }
-        .onChange(of: isScanning) { _, _ in
-            updateAnimation()
-        }
     }
 
     private func updateAnimation() {
         if isScanning {
-            sweepDegrees = 0
-            withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) {
-                sweepDegrees = 360
-            }
-            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
-                glowOpacity = 0.92
-            }
+            scanStart = Date()
+            glowOpacity = 0.92
         } else {
-            sweepDegrees = 0
-            glowOpacity = 0.35
+            withAnimation(.easeOut(duration: 0.25)) {
+                glowOpacity = 0.35
+            }
         }
     }
 }
@@ -1766,6 +2328,15 @@ private struct TimelineView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .scrollContentBackground(.hidden)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(AppTheme.input.opacity(0.86))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(AppTheme.primary.opacity(0.24), lineWidth: 1)
+                        )
+                )
             }
         }
         .padding()
@@ -1983,7 +2554,7 @@ private struct CaseBuilderView: View {
             TextEditor(text: $notes)
                 .frame(minHeight: 72, maxHeight: 120)
                 .scrollContentBackground(.hidden)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
+                .background(RoundedRectangle(cornerRadius: 10).fill(AppTheme.input.opacity(0.88)))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(AppTheme.primary.opacity(0.20), lineWidth: 1))
 
             HStack(alignment: .top, spacing: 12) {
@@ -2000,6 +2571,15 @@ private struct CaseBuilderView: View {
                         }
                         .tag(item.id)
                     }
+                    .scrollContentBackground(.hidden)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(AppTheme.input.opacity(0.88))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(AppTheme.primary.opacity(0.24), lineWidth: 1)
+                            )
+                    )
                 }
                 .cardSurface()
 
@@ -2015,6 +2595,15 @@ private struct CaseBuilderView: View {
                                 .font(.caption)
                         }
                     }
+                    .scrollContentBackground(.hidden)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(AppTheme.input.opacity(0.88))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(AppTheme.primary.opacity(0.24), lineWidth: 1)
+                            )
+                    )
                 }
                 .frame(width: 320)
                 .cardSurface()

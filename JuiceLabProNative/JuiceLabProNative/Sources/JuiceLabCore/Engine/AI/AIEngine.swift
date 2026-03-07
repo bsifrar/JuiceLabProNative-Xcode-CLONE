@@ -71,7 +71,18 @@ public final class AIEngine: @unchecked Sendable {
     ) async -> [ReasonDetection]? {
 
         #if canImport(Vision)
-        guard let vnModel = loadDetectorVNModel(modelName: modelName, compute: compute) else {
+        let candidateNames = [modelName, "NSFWDetector", "NSFWReasons"]
+        let orderedNames = Array(NSOrderedSet(array: candidateNames)) as? [String] ?? candidateNames
+
+        var resolvedModel: VNCoreMLModel?
+        for name in orderedNames {
+            if let vn = loadDetectorVNModel(modelName: name, compute: compute) {
+                resolvedModel = vn
+                break
+            }
+        }
+
+        guard let vnModel = resolvedModel else {
             return nil
         }
 
@@ -83,28 +94,45 @@ public final class AIEngine: @unchecked Sendable {
                 }
 
                 let detections: [ReasonDetection] = results.compactMap { r in
-                    guard let o = r as? VNRecognizedObjectObservation else { return nil }
-                    guard let top = o.labels.first else { return nil }
+                    if let o = r as? VNRecognizedObjectObservation, let top = o.labels.first {
+                        let label = top.identifier
+                        let conf = Double(top.confidence)
+                        if Self.isBenignLabel(label) { return nil }
 
-                    let label = top.identifier
-                    let conf = Double(top.confidence)
+                        let reason = Self.mapLabelToReason(label)
+                        let bb = o.boundingBox // normalized (Vision space)
+                        let bbox = NormalizedRect(
+                            x: Double(bb.origin.x),
+                            y: Double(bb.origin.y),
+                            w: Double(bb.size.width),
+                            h: Double(bb.size.height)
+                        )
 
-                    let reason = Self.mapLabelToReason(label)
-                    let bb = o.boundingBox // normalized (Vision space)
-                    let bbox = NormalizedRect(
-                        x: Double(bb.origin.x),
-                        y: Double(bb.origin.y),
-                        w: Double(bb.size.width),
-                        h: Double(bb.size.height)
-                    )
+                        return ReasonDetection(
+                            reason: reason,
+                            confidence: conf,
+                            bbox: bbox,
+                            modelLabel: label,
+                            notes: nil
+                        )
+                    }
 
-                    return ReasonDetection(
-                        reason: reason,
-                        confidence: conf,
-                        bbox: bbox,
-                        modelLabel: label,
-                        notes: nil
-                    )
+                    if let c = r as? VNClassificationObservation {
+                        let label = c.identifier
+                        let conf = Double(c.confidence)
+                        if Self.isBenignLabel(label) { return nil }
+                        // Ignore very weak class votes from generic classifiers.
+                        if conf < 0.15 { return nil }
+
+                        return ReasonDetection(
+                            reason: Self.mapLabelToReason(label),
+                            confidence: conf,
+                            bbox: nil,
+                            modelLabel: label,
+                            notes: "classification"
+                        )
+                    }
+                    return nil
                 }
 
                 cont.resume(returning: detections.isEmpty ? [] : detections)
@@ -123,6 +151,58 @@ public final class AIEngine: @unchecked Sendable {
         }
         #else
         return nil
+        #endif
+    }
+
+    /// Generic, model-free semantic tags (object classes + OCR tokens) used for evidence search.
+    /// These are appended to analyzer outputs but do not affect NSFW scoring.
+    public func detectSemanticDetections(
+        cgImage: CGImage,
+        maxObjectLabels: Int = 8,
+        maxTextTokens: Int = 10
+    ) async -> [ReasonDetection] {
+        #if canImport(Vision)
+        var out: [ReasonDetection] = []
+        var seen = Set<String>()
+
+        if let labels = await classifyImageLabels(cgImage: cgImage, maxCount: maxObjectLabels) {
+            for (label, conf) in labels {
+                let normalized = normalizeSemanticToken(label)
+                guard !normalized.isEmpty, !seen.contains(normalized) else { continue }
+                seen.insert(normalized)
+                out.append(
+                    ReasonDetection(
+                        reason: .other,
+                        confidence: conf,
+                        bbox: nil,
+                        modelLabel: normalized,
+                        notes: "semantic_object"
+                    )
+                )
+            }
+        }
+
+        if let textTokens = await detectTextTokens(cgImage: cgImage, maxCount: maxTextTokens) {
+            for token in textTokens {
+                let normalized = normalizeSemanticToken(token)
+                guard !normalized.isEmpty, !seen.contains(normalized) else { continue }
+                seen.insert(normalized)
+                out.append(
+                    ReasonDetection(
+                        reason: .other,
+                        confidence: 0.70,
+                        bbox: nil,
+                        modelLabel: normalized,
+                        notes: "semantic_ocr"
+                    )
+                )
+            }
+        }
+
+        return out
+        #else
+        _ = (cgImage, maxObjectLabels, maxTextTokens)
+        return []
         #endif
     }
 
@@ -157,8 +237,9 @@ public final class AIEngine: @unchecked Sendable {
         // IMPORTANT (Reproducibility + MAS):
         // - Bundle includes raw .mlmodel or .mlpackage as a *resource* (Copy Bundle Resources).
         // - We compile to a sandbox cache at runtime, so we never hard-code / rely on .mlmodelc in the bundle.
-        guard let rawURL = Bundle.main.url(forResource: modelName, withExtension: "mlmodel")
-            ?? Bundle.main.url(forResource: modelName, withExtension: "mlpackage") else {
+        guard let modelURL = Bundle.main.url(forResource: modelName, withExtension: "mlmodel")
+            ?? Bundle.main.url(forResource: modelName, withExtension: "mlpackage")
+            ?? Bundle.main.url(forResource: modelName, withExtension: "mlmodelc") else {
             return nil
         }
 
@@ -174,11 +255,18 @@ public final class AIEngine: @unchecked Sendable {
         }
 
         do {
-            let compiledURL = try MLModel.compileModel(at: rawURL)
-            let mlModel = try MLModel(contentsOf: compiledURL, configuration: config)
+            let modelExt = modelURL.pathExtension.lowercased()
+            let loadURL: URL
+            if modelExt == "mlmodelc" {
+                loadURL = modelURL
+            } else {
+                loadURL = try MLModel.compileModel(at: modelURL)
+            }
+
+            let mlModel = try MLModel(contentsOf: loadURL, configuration: config)
             let vn = try VNCoreMLModel(for: mlModel)
 
-            let hash = Self.hashModelResource(rawURL)
+            let hash = Self.hashModelResource(modelURL)
 
             lock.lock()
             cachedKey = key
@@ -217,7 +305,119 @@ public final class AIEngine: @unchecked Sendable {
         if l.contains("nude") || l.contains("nudity") {
             return .nudity
         }
+        if l.contains("porn") || l.contains("explicit") || l.contains("adult") || l.contains("nsfw") {
+            return .sexAct
+        }
+        if l.contains("sexy") || l.contains("provocative") || l.contains("suggestive") {
+            return .lingerie
+        }
         return .other
+    }
+
+    private static func isBenignLabel(_ label: String) -> Bool {
+        let l = label.lowercased()
+        return l.contains("safe")
+            || l.contains("neutral")
+            || l == "clean"
+            || l == "normal"
+            || l == "sfw"
+            || l == "non_nude"
+            || l == "non-nude"
+    }
+
+    private func classifyImageLabels(cgImage: CGImage, maxCount: Int) async -> [(String, Double)]? {
+        #if canImport(Vision)
+        return await withCheckedContinuation { cont in
+            if #available(macOS 11.0, *) {
+                let request = VNClassifyImageRequest { req, _ in
+                    guard let results = req.results as? [VNClassificationObservation], !results.isEmpty else {
+                        cont.resume(returning: nil)
+                        return
+                    }
+                    let labels = results
+                        .filter { $0.confidence >= 0.10 }
+                        .prefix(max(maxCount, 1))
+                        .map { (Self.cleanLabel($0.identifier), Double($0.confidence)) }
+                    cont.resume(returning: labels.isEmpty ? nil : Array(labels))
+                }
+                let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        try handler.perform([request])
+                    } catch {
+                        cont.resume(returning: nil)
+                    }
+                }
+            } else {
+                cont.resume(returning: nil)
+            }
+        }
+        #else
+        _ = (cgImage, maxCount)
+        return nil
+        #endif
+    }
+
+    private func detectTextTokens(cgImage: CGImage, maxCount: Int) async -> [String]? {
+        #if canImport(Vision)
+        return await withCheckedContinuation { cont in
+            let request = VNRecognizeTextRequest { req, _ in
+                guard let observations = req.results as? [VNRecognizedTextObservation], !observations.isEmpty else {
+                    cont.resume(returning: nil)
+                    return
+                }
+                var out = Set<String>()
+                for obs in observations {
+                    guard let top = obs.topCandidates(1).first else { continue }
+                    let text = top.string.lowercased()
+                    for piece in text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
+                        let token = String(piece.prefix(48))
+                        if token.count < 3 { continue }
+                        out.insert(token)
+                        if out.count >= max(maxCount, 1) {
+                            cont.resume(returning: Array(out))
+                            return
+                        }
+                    }
+                }
+                cont.resume(returning: out.isEmpty ? nil : Array(out))
+            }
+            request.recognitionLevel = .fast
+            request.usesLanguageCorrection = false
+            request.minimumTextHeight = 0.03
+
+            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try handler.perform([request])
+                } catch {
+                    cont.resume(returning: nil)
+                }
+            }
+        }
+        #else
+        _ = (cgImage, maxCount)
+        return nil
+        #endif
+    }
+
+    private static func cleanLabel(_ label: String) -> String {
+        label
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func normalizeSemanticToken(_ token: String) -> String {
+        let cleaned = Self.cleanLabel(token)
+        if cleaned == "cell phone" || cleaned == "mobile phone" || cleaned == "smartphone" {
+            return "iphone"
+        }
+        if cleaned == "ballon" || cleaned == "baloon" {
+            return "balloon"
+        }
+        return cleaned
     }
 
     private static func hashModelResource(_ url: URL) -> String? {

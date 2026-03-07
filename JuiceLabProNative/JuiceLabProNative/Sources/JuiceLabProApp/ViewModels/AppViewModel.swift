@@ -18,10 +18,32 @@ final class AppViewModel: ObservableObject {
         case settings = "Settings"
     }
 
+    enum ForensicFacet: String, Sendable, Equatable {
+        case remFiles
+        case mediaRecovered
+        case possibleDecryptableDBs
+        case nestedArchives
+        case decryptableSignals
+        case thumbnails
+        case messageSignals
+        case keys
+        case emails
+        case urls
+        case phoneNumbers
+        case languageText
+        case hashCandidates
+        case aiSafe
+        case aiSuggestive
+        case aiExplicit
+        case aiUnknown
+    }
+
     @Published var route: Route? = .results
     @Published var settings = ScanSettings(dedupeMode: .exactBytes, enableAI: true)
     @Published var runs: [ScanRun] = []
     @Published var selectedRunID: UUID?
+    @Published var selectedRunKey: String?
+    @Published var activeForensicFacet: ForensicFacet?
     @Published var selectedItem: FoundItem?
     @Published var query = ""
     @Published var selectedCategories = Set(FileCategory.allCases)
@@ -52,10 +74,17 @@ final class AppViewModel: ObservableObject {
     private var pendingTick: Bool = false
 
     init() {
-        Task { runs = await history.load() }
+        Task {
+            let loaded = await history.load()
+            runs = normalizeRuns(loaded)
+            sanitizeSelectionAfterRunsChange()
+        }
     }
 
     var activeRun: ScanRun? {
+        if let selectedRunKey {
+            return runs.first(where: { runKey($0) == selectedRunKey })
+        }
         if let selectedRunID {
             return runs.first(where: { $0.id == selectedRunID })
         }
@@ -66,10 +95,14 @@ final class AppViewModel: ObservableObject {
         guard let run = activeRun else { return [] }
         _ = itemTick // drive reevaluation
         ensureSearchIndex(for: run)
+        let analyzerByPath = Dictionary(
+            uniqueKeysWithValues: run.forensic.analyzerResults.map { ($0.sourcePath, $0) }
+        )
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let queryCandidates = candidateItemIDs(for: q)
         let filtered = run.items.filter { item in
             selectedCategories.contains(item.category) &&
+            matchesForensicFacet(item: item, analyzer: analyzerByPath[item.sourcePath]) &&
             (q.isEmpty || queryCandidates.contains(item.id) || matchesQuery(item: item, query: q))
         }
         if filtered.count > maxVisibleItems {
@@ -170,8 +203,9 @@ final class AppViewModel: ObservableObject {
                 return
             }
 
-            runs.insert(doneRun, at: 0)
+            upsertRun(doneRun)
             selectedRunID = doneRun.id
+            selectedRunKey = runKey(doneRun)
             try? await history.save(run: doneRun)
             rebuildSearchIndex(for: doneRun)
             if doneRun.items.isEmpty {
@@ -201,12 +235,9 @@ final class AppViewModel: ObservableObject {
         Task { @MainActor in
             do {
                 let updated = try await engine.runAgents(for: run)
-                if let idx = runs.firstIndex(where: { $0.id == updated.id }) {
-                    runs[idx] = updated
-                } else {
-                    runs.insert(updated, at: 0)
-                }
+                upsertRun(updated)
                 selectedRunID = updated.id
+                selectedRunKey = runKey(updated)
                 try? await history.save(run: updated)
                 statusMessage = "Agents completed. Open Agent Summary for results."
             } catch {
@@ -225,12 +256,9 @@ final class AppViewModel: ObservableObject {
         Task { @MainActor in
             do {
                 let updated = try await engine.performRecommendedActions(for: run)
-                if let idx = runs.firstIndex(where: { $0.id == updated.id }) {
-                    runs[idx] = updated
-                } else {
-                    runs.insert(updated, at: 0)
-                }
+                upsertRun(updated)
                 selectedRunID = updated.id
+                selectedRunKey = runKey(updated)
                 try? await history.save(run: updated)
                 statusMessage = "Recommended actions completed. Open Agent Actions report."
             } catch {
@@ -256,6 +284,8 @@ final class AppViewModel: ObservableObject {
 
         runs.removeAll()
         selectedRunID = nil
+        selectedRunKey = nil
+        activeForensicFacet = nil
         selectedItem = nil
         progress = ScanProgress()
         statusMessage = "Results cleared."
@@ -343,6 +373,68 @@ final class AppViewModel: ObservableObject {
         return false
     }
 
+    private func matchesForensicFacet(item: FoundItem, analyzer: AnalyzerResult?) -> Bool {
+        guard let facet = activeForensicFacet else { return true }
+
+        let ext = item.fileExtension.lowercased()
+        let type = item.detectedType.lowercased()
+        let path = item.sourcePath.lowercased()
+        let textishExts: Set<String> = [
+            "txt", "md", "rtf", "csv", "json", "xml", "html", "htm", "log",
+            "plist", "vcf", "sql", "db", "sqlite", "sqlite3"
+        ]
+
+        switch facet {
+        case .remFiles:
+            return ext == "rem" || path.hasSuffix(".rem") || type.contains("rem")
+        case .mediaRecovered:
+            return item.category == .images || item.category == .video || item.category == .audio
+        case .possibleDecryptableDBs:
+            return ["db", "sqlite", "sqlite3", "sqlitedb"].contains(ext) ||
+                type.contains("sqlite") || type.contains("database")
+        case .nestedArchives:
+            return item.category == .archives
+        case .decryptableSignals:
+            return ["db", "sqlite", "sqlite3", "plist", "bplist", "key", "pem", "p12", "pfx"].contains(ext) ||
+                path.contains("keychain") || type.contains("decrypt")
+        case .thumbnails:
+            return path.contains("thumb") || path.contains("thumbnail") || type.contains("thumbnail")
+        case .messageSignals:
+            return path.contains("message") || path.contains("sms") || path.contains("chat")
+        case .keys:
+            return path.contains("key") || ["key", "pem", "p12", "pfx", "cer", "crt", "der"].contains(ext)
+        case .emails:
+            if item.category == .audio || item.category == .video || item.category == .images { return false }
+            let emailExts: Set<String> = ["eml", "msg", "mbox", "pst", "ost"]
+            if emailExts.contains(ext) { return true }
+            return (path.contains("/mail/") || path.contains("/emails/")) && textishExts.contains(ext)
+        case .urls:
+            return ["url", "webloc", "html", "htm"].contains(ext) || path.contains("url")
+        case .phoneNumbers:
+            if item.category == .audio || item.category == .video || item.category == .images || item.category == .archives { return false }
+            let phoneDataExts: Set<String> = ["vcf", "csv", "txt", "html", "htm", "json", "xml", "db", "sqlite", "sqlite3", "plist", "log"]
+            let likelyPhoneDataPath = path.contains("contact")
+                || path.contains("addressbook")
+                || path.contains("call")
+                || path.contains("sms")
+                || path.contains("message")
+                || path.contains("phone")
+            return phoneDataExts.contains(ext) && likelyPhoneDataPath
+        case .languageText:
+            return item.category == .text || textishExts.contains(ext)
+        case .hashCandidates:
+            return path.contains("hash") || type.contains("hash")
+        case .aiSafe:
+            return analyzer?.nsfwSeverity == NSFWSeverity.none
+        case .aiSuggestive:
+            return analyzer?.nsfwSeverity == NSFWSeverity.suggestive
+        case .aiExplicit:
+            return analyzer?.nsfwSeverity == NSFWSeverity.explicit
+        case .aiUnknown:
+            return analyzer?.nsfwSeverity == NSFWSeverity.unknown
+        }
+    }
+
     private func ensureSearchIndex(for run: ScanRun) {
         guard indexedRunID != run.id, indexingTask == nil else { return }
         rebuildSearchIndex(for: run)
@@ -414,8 +506,11 @@ final class AppViewModel: ObservableObject {
         var out = Set<String>()
         out.reserveCapacity(128)
         for piece in text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
-            if piece.count < 3 { continue }
-            out.insert(String(piece.prefix(48)))
+            let raw = String(piece.prefix(48)).lowercased()
+            if raw.count < 3 { continue }
+            for variant in searchTokenVariants(for: raw) {
+                out.insert(variant)
+            }
             if out.count >= 300 { break }
         }
         return out
@@ -423,23 +518,65 @@ final class AppViewModel: ObservableObject {
 
     private func candidateItemIDs(for query: String) -> Set<UUID> {
         guard !query.isEmpty else { return [] }
-        let terms = query
+        let terms = query.lowercased()
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-            .map { String($0.lowercased()) }
+            .map { String($0) }
             .filter { $0.count >= 3 }
         guard !terms.isEmpty else { return [] }
 
-        var running: Set<UUID>?
+        var running = Set<UUID>()
         for term in terms {
-            guard let ids = tokenSearchIndex[term] else { return [] }
-            if let current = running {
-                running = current.intersection(ids)
-            } else {
-                running = ids
+            var bucket = Set<UUID>()
+            for variant in Self.searchTokenVariants(for: term) {
+                if let ids = tokenSearchIndex[variant] {
+                    bucket.formUnion(ids)
+                }
             }
-            if running?.isEmpty == true { return [] }
+            if bucket.isEmpty { continue }
+            running.formUnion(bucket)
         }
-        return running ?? []
+        return running
+    }
+
+    private nonisolated static func searchTokenVariants(for token: String) -> Set<String> {
+        var out = Set<String>()
+        var normalized = token
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count >= 3 else { return out }
+
+        let alias: [String: String] = [
+            "baloon": "balloon",
+            "ballon": "balloon",
+            "cellphone": "iphone",
+            "mobilephone": "iphone",
+            "smartphone": "iphone",
+            "iphones": "iphone",
+            "breasts": "breast",
+            "penises": "penis",
+            "genitals": "genital",
+            "boates": "boat"
+        ]
+        if let mapped = alias[normalized] {
+            normalized = mapped
+        }
+
+        out.insert(normalized)
+
+        if normalized.hasSuffix("ies"), normalized.count > 4 {
+            let stem = String(normalized.dropLast(3)) + "y"
+            if stem.count >= 3 { out.insert(stem) }
+        } else if normalized.hasSuffix("es"), normalized.count > 4 {
+            let stem = String(normalized.dropLast(2))
+            if stem.count >= 3 { out.insert(stem) }
+        } else if normalized.hasSuffix("s"), normalized.count > 3 {
+            let stem = String(normalized.dropLast())
+            if stem.count >= 3 { out.insert(stem) }
+        }
+
+        return out
     }
 
     private nonisolated static func readSearchableSnippet(for item: FoundItem) -> String? {
@@ -477,6 +614,71 @@ final class AppViewModel: ObservableObject {
             out.append(cur)
         }
         return out.isEmpty ? nil : out
+    }
+
+    func runKey(_ run: ScanRun) -> String {
+        "\(run.id.uuidString)|\(run.outputRoot)"
+    }
+
+    var activeForensicFacetLabel: String? {
+        guard let activeForensicFacet else { return nil }
+        switch activeForensicFacet {
+        case .remFiles: return ".REM Files"
+        case .mediaRecovered: return "Media Recovered"
+        case .possibleDecryptableDBs: return "Possible Decryptable DBs"
+        case .nestedArchives: return "Nested Archives"
+        case .decryptableSignals: return "Decryptable Signals"
+        case .thumbnails: return "Thumbnails"
+        case .messageSignals: return "Message Signals"
+        case .keys: return "Keys"
+        case .emails: return "Emails"
+        case .urls: return "URLs"
+        case .phoneNumbers: return "Phone Numbers"
+        case .languageText: return "Language Text"
+        case .hashCandidates: return "Hash Candidates"
+        case .aiSafe: return "AI Safe"
+        case .aiSuggestive: return "AI Suggestive"
+        case .aiExplicit: return "AI Explicit"
+        case .aiUnknown: return "AI Unknown"
+        }
+    }
+
+    func clearForensicFacet() {
+        activeForensicFacet = nil
+    }
+
+    private func upsertRun(_ run: ScanRun) {
+        let key = runKey(run)
+        runs.removeAll { runKey($0) == key }
+        runs.insert(run, at: 0)
+        runs = normalizeRuns(runs)
+        sanitizeSelectionAfterRunsChange()
+    }
+
+    private func normalizeRuns(_ input: [ScanRun]) -> [ScanRun] {
+        var seen = Set<String>()
+        var output: [ScanRun] = []
+        output.reserveCapacity(input.count)
+        for run in input {
+            let key = runKey(run)
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
+            output.append(run)
+        }
+        return output
+    }
+
+    private func sanitizeSelectionAfterRunsChange() {
+        guard !runs.isEmpty else {
+            selectedRunID = nil
+            selectedRunKey = nil
+            return
+        }
+        if let key = selectedRunKey, runs.contains(where: { runKey($0) == key }) {
+            return
+        }
+        selectedRunID = runs[0].id
+        selectedRunKey = runKey(runs[0])
     }
 }
 #endif
